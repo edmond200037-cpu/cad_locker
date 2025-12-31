@@ -31,8 +31,8 @@
 
 /* ========== Constants ========== */
 
-#define WINDOW_WIDTH  500
-#define WINDOW_HEIGHT 520
+#define WINDOW_WIDTH  700
+#define WINDOW_HEIGHT 680
 #define ID_BROWSE_BTN 1001
 #define ID_BUILD_BTN  1002
 #define ID_SUFFIX_EDIT 1003
@@ -57,8 +57,20 @@ static HWND g_hStatusLabel = NULL;
 static HWND g_hBuildBtn = NULL;
 static WCHAR g_szFilePath[MAX_PATH] = {0};
 static HBRUSH g_hBgBrush = NULL;
+static HBRUSH g_hAccentBrush = NULL;
+static HBRUSH g_hBlackBrush = NULL;
+static HPEN g_hGridPen = NULL;
 static HFONT g_hFont = NULL;
 static HFONT g_hBigFont = NULL;
+static HFONT g_hSmallFont = NULL;
+static HFONT g_hVerticalFont = NULL;
+
+/* ========== Colors ========== */
+#define RGB_BG          RGB(235, 235, 235)
+#define RGB_ACCENT      RGB(255, 110, 40)
+#define RGB_BLACK       RGB(20, 20, 20)
+#define RGB_GRID        RGB(215, 215, 215)
+#define RGB_TEXT_SIDE   RGB(120, 120, 120)
 
 /* ========== Utility Functions ========== */
 
@@ -160,6 +172,54 @@ static void get_dir(const WCHAR* path, WCHAR* out_dir, size_t max_len) {
         out_dir[1] = 0x005C;
         out_dir[2] = L'\0';
     }
+}
+
+// Memory Module: Load and Save Settings
+static void get_config_path(WCHAR* out_path) {
+    get_builder_dir(out_path, MAX_PATH);
+    wcscat(out_path, L"config.ini");
+}
+
+static void load_settings() {
+    WCHAR config_path[MAX_PATH];
+    get_config_path(config_path);
+    
+    WCHAR suffix[64];
+    GetPrivateProfileStringW(L"Settings", L"Suffix", L"_secure", suffix, 64, config_path);
+    SetWindowTextW(g_hSuffixEdit, suffix);
+    
+    int limit = GetPrivateProfileIntW(L"Settings", L"Limit", 5, config_path);
+    WCHAR limit_str[16];
+    swprintf(limit_str, 16, L"%d", limit);
+    SetWindowTextW(g_hLimitEdit, limit_str);
+    
+    uint32_t flags = GetPrivateProfileIntW(L"Settings", L"Flags", FLAG_SHOW_COUNTDOWN | FLAG_SELF_DESTRUCT, config_path);
+    
+    SetWindowLongPtr(g_hMeltdownCheck, GWLP_USERDATA, (flags & FLAG_MELTDOWN) ? 1 : 0);
+    SetWindowLongPtr(g_hShowPopupCheck, GWLP_USERDATA, (flags & FLAG_SHOW_COUNTDOWN) ? 1 : 0);
+    SetWindowLongPtr(g_hSelfDestructCheck, GWLP_USERDATA, (flags & FLAG_SELF_DESTRUCT) ? 1 : 0);
+}
+
+static void save_settings() {
+    WCHAR config_path[MAX_PATH];
+    get_config_path(config_path);
+    
+    WCHAR suffix[64];
+    GetWindowTextW(g_hSuffixEdit, suffix, 64);
+    WritePrivateProfileStringW(L"Settings", L"Suffix", suffix, config_path);
+    
+    WCHAR limit_str[16];
+    GetWindowTextW(g_hLimitEdit, limit_str, 16);
+    WritePrivateProfileStringW(L"Settings", L"Limit", limit_str, config_path);
+    
+    uint32_t flags = 0;
+    if (GetWindowLongPtr(g_hMeltdownCheck, GWLP_USERDATA)) flags |= FLAG_MELTDOWN;
+    if (GetWindowLongPtr(g_hShowPopupCheck, GWLP_USERDATA)) flags |= FLAG_SHOW_COUNTDOWN;
+    if (GetWindowLongPtr(g_hSelfDestructCheck, GWLP_USERDATA)) flags |= FLAG_SELF_DESTRUCT;
+    
+    WCHAR flags_str[16];
+    swprintf(flags_str, 16, L"%u", flags);
+    WritePrivateProfileStringW(L"Settings", L"Flags", flags_str, config_path);
 }
 
 /* ========== Build Logic ========== */
@@ -271,6 +331,10 @@ static BOOL build_protected_exe(const WCHAR* dwg_path, const WCHAR* suffix, int 
     MessageBoxW(g_hWnd, status_msg, L"CAD Locker", MB_OK | MB_ICONINFORMATION);
     
     SetWindowTextW(g_hStatusLabel, L"✅ 建置完成！");
+    
+    // Remember settings on success
+    save_settings();
+    
     result = TRUE;
     
 cleanup:
@@ -325,138 +389,160 @@ static void handle_dropped_file(HDROP hDrop) {
 
 /* ========== Window Procedure ========== */
 
+static void DrawRoundedRect(HDC hdc, RECT* rect, int radius, HBRUSH hBrush) {
+    SelectObject(hdc, GetStockObject(NULL_PEN));
+    SelectObject(hdc, hBrush);
+    RoundRect(hdc, rect->left, rect->top, rect->right, rect->bottom, radius, radius);
+}
+
 static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
         case WM_CREATE: {
             // Create controls
-            int y = 20;
-            
-            // Title
-            g_hDropLabel = CreateWindowW(
-                L"STATIC", L"🔒 CAD Locker Builder",
-                WS_CHILD | WS_VISIBLE | SS_CENTER,
-                20, y, WINDOW_WIDTH - 40, 40,
-                hWnd, NULL, NULL, NULL);
-            SendMessageW(g_hDropLabel, WM_SETFONT, (WPARAM)g_hBigFont, TRUE);
-            y += 50;
-            
-            // Drop zone
-            CreateWindowW(
-                L"STATIC", L"",
-                WS_CHILD | WS_VISIBLE | SS_ETCHEDFRAME,
-                30, y, WINDOW_WIDTH - 60, 80,
-                hWnd, NULL, NULL, NULL);
-            
-            CreateWindowW(
-                L"STATIC", L"📁 拖放 DWG 檔案到此處\n或點擊「瀏覽」按鈕選擇",
-                WS_CHILD | WS_VISIBLE | SS_CENTER,
-                40, y + 20, WINDOW_WIDTH - 80, 50,
-                hWnd, NULL, NULL, NULL);
-            y += 95;
-            
-            // Browse button
-            CreateWindowW(
-                L"BUTTON", L"瀏覽...",
-                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                WINDOW_WIDTH / 2 - 50, y, 100, 30,
-                hWnd, (HMENU)ID_BROWSE_BTN, NULL, NULL);
-            y += 45;
-            
-            // Selected file label
-            CreateWindowW(
-                L"STATIC", L"已選擇檔案：",
-                WS_CHILD | WS_VISIBLE,
-                30, y, 100, 20,
-                hWnd, NULL, NULL, NULL);
-            
-            g_hFileLabel = CreateWindowW(
-                L"STATIC", L"(尚未選擇)",
-                WS_CHILD | WS_VISIBLE | SS_PATHELLIPSIS,
-                130, y, WINDOW_WIDTH - 160, 20,
-                hWnd, NULL, NULL, NULL);
-            y += 30;
+            int sidebar_w = 100;
+            int margin = 30;
+            int x_start = sidebar_w + margin;
+            int y = 280;
             
             // Suffix input
-            CreateWindowW(
-                L"STATIC", L"輸出後綴：",
-                WS_CHILD | WS_VISIBLE,
-                30, y + 3, 100, 20,
-                hWnd, NULL, NULL, NULL);
-            
-            g_hSuffixEdit = CreateWindowW(
-                L"EDIT", L"_secure",
-                WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
-                130, y, 120, 25,
-                hWnd, (HMENU)ID_SUFFIX_EDIT, NULL, NULL);
-            y += 35;
+            CreateWindowW(L"STATIC", L"輸入後綴 (Output Suffix)", WS_CHILD | WS_VISIBLE, x_start, y, 200, 20, hWnd, NULL, NULL, NULL);
+            g_hSuffixEdit = CreateWindowW(L"EDIT", L"_secure", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL, x_start, y + 25, 120, 25, hWnd, (HMENU)ID_SUFFIX_EDIT, NULL, NULL);
             
             // Limit input
-            CreateWindowW(
-                L"STATIC", L"瀏覽次數：",
-                WS_CHILD | WS_VISIBLE,
-                30, y + 3, 100, 20,
-                hWnd, NULL, NULL, NULL);
+            CreateWindowW(L"STATIC", L"限制次數 (Launch Limit)", WS_CHILD | WS_VISIBLE, x_start + 220, y, 200, 20, hWnd, NULL, NULL, NULL);
+            g_hLimitEdit = CreateWindowW(L"EDIT", L"5", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_NUMBER, x_start + 220, y + 25, 80, 25, hWnd, (HMENU)ID_LIMIT_EDIT, NULL, NULL);
+            y += 85;
             
-            g_hLimitEdit = CreateWindowW(
-                L"EDIT", L"5",
-                WS_CHILD | WS_VISIBLE | WS_BORDER | ES_NUMBER,
-                130, y, 60, 25,
-                hWnd, (HMENU)ID_LIMIT_EDIT, NULL, NULL);
-            
-            CreateWindowW(
-                L"STATIC", L"(0 = 無限制)",
-                WS_CHILD | WS_VISIBLE,
-                200, y + 3, 100, 20,
-                hWnd, NULL, NULL, NULL);
+            // Toggle Switches (BS_OWNERDRAW)
+            g_hMeltdownCheck = CreateWindowW(L"BUTTON", L"🔴 ENABLE MELTDOWN MODE", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, x_start, y, 400, 30, hWnd, (HMENU)ID_MELTDOWN_CHECK, NULL, NULL);
             y += 40;
-            
-            // Meltdown Checkbox
-            g_hMeltdownCheck = CreateWindowW(
-                L"BUTTON", L"🔴 開啟「熔斷機制」(偵測到另存/列印時直接關閉 CAD)",
-                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                30, y, 400, 25,
-                hWnd, (HMENU)ID_MELTDOWN_CHECK, NULL, NULL);
-            y += 35;
-            
-            g_hShowPopupCheck = CreateWindowW(
-                L"BUTTON", L"💬 顯示剩餘次數彈窗",
-                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                30, y, 400, 25,
-                hWnd, (HMENU)ID_SHOW_POPUP_CHECK, NULL, NULL);
-            SendMessageW(g_hShowPopupCheck, BM_SETCHECK, BST_CHECKED, 0); // Default Checked
-            y += 35;
-            
-            g_hSelfDestructCheck = CreateWindowW(
-                L"BUTTON", L"🗑️ 達到限制次數後自動銷毀檔案",
-                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                30, y, 400, 25,
-                hWnd, (HMENU)ID_SELF_DESTRUCT_CHECK, NULL, NULL);
-            SendMessageW(g_hSelfDestructCheck, BM_SETCHECK, BST_CHECKED, 0); // Default Checked
+            g_hShowPopupCheck = CreateWindowW(L"BUTTON", L"💬 SHOW REMAINING COUNT POPUP", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, x_start, y, 400, 30, hWnd, (HMENU)ID_SHOW_POPUP_CHECK, NULL, NULL);
             y += 40;
+            g_hSelfDestructCheck = CreateWindowW(L"BUTTON", L"🗑️ AUTO SELF-DESTRUCT", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, x_start, y, 400, 30, hWnd, (HMENU)ID_SELF_DESTRUCT_CHECK, NULL, NULL);
+            y += 60;
             
             // Build button
-            g_hBuildBtn = CreateWindowW(
-                L"BUTTON", L"🔐 建立受保護檔案",
-                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON | WS_DISABLED,
-                WINDOW_WIDTH / 2 - 80, y, 160, 35,
-                hWnd, (HMENU)ID_BUILD_BTN, NULL, NULL);
-            y += 50;
+            g_hBuildBtn = CreateWindowW(L"BUTTON", L"GENERATE PROTECTED EXE", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON | WS_DISABLED, x_start, y, 250, 45, hWnd, (HMENU)ID_BUILD_BTN, NULL, NULL);
+            y += 80;
             
-            // Status label
-            g_hStatusLabel = CreateWindowW(
-                L"STATIC", L"等待拖放檔案...",
-                WS_CHILD | WS_VISIBLE | SS_CENTER,
-                20, y, WINDOW_WIDTH - 40, 20,
-                hWnd, NULL, NULL, NULL);
+            // Browse button and status labels
+            CreateWindowW(L"BUTTON", L"BROWSE FILE...", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, x_start, y, 120, 30, hWnd, (HMENU)ID_BROWSE_BTN, NULL, NULL);
+            g_hFileLabel = CreateWindowW(L"STATIC", L"NO FILE SELECTED", WS_CHILD | WS_VISIBLE | SS_PATHELLIPSIS, x_start + 140, y + 5, 400, 20, hWnd, NULL, NULL, NULL);
+            y += 40;
+            g_hStatusLabel = CreateWindowW(L"STATIC", L"READY TO PROTECT", WS_CHILD | WS_VISIBLE, x_start, y, 400, 20, hWnd, NULL, NULL, NULL);
             
+            load_settings();
             return 0;
         }
-        
+
+        case WM_PAINT: {
+            PAINTSTRUCT ps;
+            HDC hdc = BeginPaint(hWnd, &ps);
+            
+            RECT client;
+            GetClientRect(hWnd, &client);
+            
+            // 1. Draw Grid
+            SelectObject(hdc, g_hGridPen);
+            int grid_size = 80;
+            for (int x = grid_size; x < client.right; x += grid_size) {
+                MoveToEx(hdc, x, 0, NULL);
+                LineTo(hdc, x, client.bottom);
+            }
+            for (int y = grid_size; y < client.bottom; y += grid_size) {
+                MoveToEx(hdc, 0, y, NULL);
+                LineTo(hdc, client.right, y);
+            }
+            
+            // 2. Draw Sidebar Branding
+            RECT brandRect = {0, 0, 160, 60};
+            FillRect(hdc, &brandRect, g_hBlackBrush);
+            SetTextColor(hdc, RGB(255, 255, 255));
+            SetBkMode(hdc, TRANSPARENT);
+            SelectObject(hdc, g_hBigFont);
+            TextOutW(hdc, 20, 15, L"CAD LOCKER", 10);
+            
+            // 3. Draw Large Orange Card (Drop Zone)
+            RECT orangeRect = {130, 80, client.right - 30, 250};
+            DrawRoundedRect(hdc, &orangeRect, 20, g_hAccentBrush);
+            
+            // 4. Draw card text
+            SetTextColor(hdc, RGB_BLACK);
+            SelectObject(hdc, g_hBigFont);
+            TextOutW(hdc, 160, 110, L"DROP DWG HERE", 13);
+            
+            // 5. Vertical Sidebar Text
+            SetTextColor(hdc, RGB_TEXT_SIDE);
+            SelectObject(hdc, g_hVerticalFont);
+            TextOutW(hdc, 30, 450, L"2024 / DESIGN & SECURITY", 24);
+            
+            EndPaint(hWnd, &ps);
+            return 0;
+        }
+
+        case WM_DRAWITEM: {
+            LPDRAWITEMSTRUCT pdis = (LPDRAWITEMSTRUCT)lParam;
+            if (pdis->CtlType == ODT_BUTTON) {
+                HDC hdc = pdis->hDC;
+                BOOL isChecked = (BOOL)GetWindowLongPtr(pdis->hwndItem, GWLP_USERDATA);
+                
+                // Track rect
+                RECT trackRc = {0, 2, 60, 28};
+                int radius = 13;
+                
+                // Colors
+                HBRUSH hTrackBrush = isChecked ? CreateSolidBrush(RGB(50, 200, 100)) : CreateSolidBrush(RGB(150, 150, 150));
+                
+                SelectObject(hdc, GetStockObject(NULL_PEN));
+                SelectObject(hdc, hTrackBrush);
+                RoundRect(hdc, trackRc.left, trackRc.top, trackRc.right, trackRc.bottom, radius * 2, radius * 2);
+                
+                // Draw Text inside track
+                SetTextColor(hdc, RGB(255, 255, 255));
+                SetBkMode(hdc, TRANSPARENT);
+                SelectObject(hdc, g_hSmallFont);
+                if (isChecked) {
+                    TextOutW(hdc, 10, 7, L"ON", 2);
+                } else {
+                    TextOutW(hdc, 32, 7, L"OFF", 3);
+                }
+                
+                // Draw Thumb (Circle)
+                HBRUSH hThumbBrush = CreateSolidBrush(RGB(255, 255, 255));
+                SelectObject(hdc, hThumbBrush);
+                int thumbSize = 20;
+                int thumbX = isChecked ? 36 : 4;
+                int thumbY = 5;
+                Ellipse(hdc, thumbX, thumbY, thumbX + thumbSize, thumbY + thumbSize);
+                
+                // Draw Label Text
+                WCHAR text[128];
+                GetWindowTextW(pdis->hwndItem, text, 128);
+                SetTextColor(hdc, RGB_BLACK);
+                SelectObject(hdc, g_hFont);
+                TextOutW(hdc, 70, 6, text, (int)wcslen(text));
+                
+                DeleteObject(hTrackBrush);
+                DeleteObject(hThumbBrush);
+                return TRUE;
+            }
+            break;
+        }
+
         case WM_DROPFILES:
             handle_dropped_file((HDROP)wParam);
             return 0;
-        
-        case WM_COMMAND:
+
+        case WM_COMMAND: {
+            if (HIWORD(wParam) == BN_CLICKED) {
+                HWND hCtrl = (HWND)lParam;
+                if (hCtrl == g_hMeltdownCheck || hCtrl == g_hShowPopupCheck || hCtrl == g_hSelfDestructCheck) {
+                    LONG_PTR state = GetWindowLongPtr(hCtrl, GWLP_USERDATA);
+                    SetWindowLongPtr(hCtrl, GWLP_USERDATA, !state);
+                    InvalidateRect(hCtrl, NULL, TRUE);
+                    return 0;
+                }
+            }
             switch (LOWORD(wParam)) {
                 case ID_BROWSE_BTN:
                     select_file_from_dialog();
@@ -479,13 +565,13 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                             limit = _wtoi(limit_str);
                         }
                         
-                        if (SendMessageW(g_hMeltdownCheck, BM_GETCHECK, 0, 0) == BST_CHECKED) {
+                        if (GetWindowLongPtr(g_hMeltdownCheck, GWLP_USERDATA)) {
                             flags |= FLAG_MELTDOWN;
                         }
-                        if (SendMessageW(g_hShowPopupCheck, BM_GETCHECK, 0, 0) == BST_CHECKED) {
+                        if (GetWindowLongPtr(g_hShowPopupCheck, GWLP_USERDATA)) {
                             flags |= FLAG_SHOW_COUNTDOWN;
                         }
-                        if (SendMessageW(g_hSelfDestructCheck, BM_GETCHECK, 0, 0) == BST_CHECKED) {
+                        if (GetWindowLongPtr(g_hSelfDestructCheck, GWLP_USERDATA)) {
                             flags |= FLAG_SELF_DESTRUCT;
                         }
                         
@@ -497,14 +583,15 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         
         case WM_CTLCOLORSTATIC: {
             HDC hdc = (HDC)wParam;
-            SetBkColor(hdc, RGB(245, 245, 250));
-            SetTextColor(hdc, RGB(50, 50, 60));
+            SetBkColor(hdc, RGB_BG);
+            SetTextColor(hdc, RGB_BLACK);
             return (LRESULT)g_hBgBrush;
         }
         
         case WM_DESTROY:
             PostQuitMessage(0);
             return 0;
+        }
     }
     
     return DefWindowProcW(hWnd, msg, wParam, lParam);
@@ -528,13 +615,26 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     (void)lpCmdLine;
     
     // Create resources
-    g_hBgBrush = CreateSolidBrush(RGB(245, 245, 250));
-    g_hFont = CreateFontW(16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+    g_hBgBrush = CreateSolidBrush(RGB_BG);
+    g_hAccentBrush = CreateSolidBrush(RGB_ACCENT);
+    g_hBlackBrush = CreateSolidBrush(RGB_BLACK);
+    g_hGridPen = CreatePen(PS_SOLID, 1, RGB_GRID);
+    
+    g_hFont = CreateFontW(14, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
                           DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                          CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Microsoft JhengHei UI");
-    g_hBigFont = CreateFontW(28, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+                          CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+    
+    g_hBigFont = CreateFontW(32, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                             CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Microsoft JhengHei UI");
+                             CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+                             
+    g_hSmallFont = CreateFontW(12, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                               DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                               CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+                               
+    g_hVerticalFont = CreateFontW(16, 0, 900, 900, FW_BOLD, FALSE, FALSE, FALSE,
+                                 DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                 CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
     
     // Register window class
     wc.cbSize = sizeof(WNDCLASSEXW);
@@ -587,8 +687,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     
     // Cleanup
     DeleteObject(g_hBgBrush);
+    DeleteObject(g_hAccentBrush);
+    DeleteObject(g_hBlackBrush);
+    DeleteObject(g_hGridPen);
     DeleteObject(g_hFont);
     DeleteObject(g_hBigFont);
+    DeleteObject(g_hSmallFont);
+    DeleteObject(g_hVerticalFont);
     
     return (int)msg.wParam;
 }
