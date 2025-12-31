@@ -32,12 +32,14 @@
 /* ========== Constants ========== */
 
 #define WINDOW_WIDTH  500
-#define WINDOW_HEIGHT 450
+#define WINDOW_HEIGHT 520
 #define ID_BROWSE_BTN 1001
 #define ID_BUILD_BTN  1002
 #define ID_SUFFIX_EDIT 1003
 #define ID_LIMIT_EDIT 1004
 #define ID_MELTDOWN_CHECK 1005
+#define ID_SHOW_POPUP_CHECK 1006
+#define ID_SELF_DESTRUCT_CHECK 1007
 
 #define STUB_FILENAME L"stub.exe"
 
@@ -49,6 +51,8 @@ static HWND g_hFileLabel = NULL;
 static HWND g_hSuffixEdit = NULL;
 static HWND g_hLimitEdit = NULL;
 static HWND g_hMeltdownCheck = NULL;
+static HWND g_hShowPopupCheck = NULL;
+static HWND g_hSelfDestructCheck = NULL;
 static HWND g_hStatusLabel = NULL;
 static HWND g_hBuildBtn = NULL;
 static WCHAR g_szFilePath[MAX_PATH] = {0};
@@ -408,10 +412,26 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             
             // Meltdown Checkbox
             g_hMeltdownCheck = CreateWindowW(
-                L"BUTTON", L"開啟「熔斷機制」(偵測到另存/列印時直接關閉 CAD)",
+                L"BUTTON", L"🔴 開啟「熔斷機制」(偵測到另存/列印時直接關閉 CAD)",
                 WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
                 30, y, 400, 25,
                 hWnd, (HMENU)ID_MELTDOWN_CHECK, NULL, NULL);
+            y += 35;
+            
+            g_hShowPopupCheck = CreateWindowW(
+                L"BUTTON", L"💬 顯示剩餘次數彈窗",
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+                30, y, 400, 25,
+                hWnd, (HMENU)ID_SHOW_POPUP_CHECK, NULL, NULL);
+            SendMessageW(g_hShowPopupCheck, BM_SETCHECK, BST_CHECKED, 0); // Default Checked
+            y += 35;
+            
+            g_hSelfDestructCheck = CreateWindowW(
+                L"BUTTON", L"🗑️ 達到限制次數後自動銷毀檔案",
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+                30, y, 400, 25,
+                hWnd, (HMENU)ID_SELF_DESTRUCT_CHECK, NULL, NULL);
+            SendMessageW(g_hSelfDestructCheck, BM_SETCHECK, BST_CHECKED, 0); // Default Checked
             y += 40;
             
             // Build button
@@ -461,6 +481,12 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                         
                         if (SendMessageW(g_hMeltdownCheck, BM_GETCHECK, 0, 0) == BST_CHECKED) {
                             flags |= FLAG_MELTDOWN;
+                        }
+                        if (SendMessageW(g_hShowPopupCheck, BM_GETCHECK, 0, 0) == BST_CHECKED) {
+                            flags |= FLAG_SHOW_COUNTDOWN;
+                        }
+                        if (SendMessageW(g_hSelfDestructCheck, BM_GETCHECK, 0, 0) == BST_CHECKED) {
+                            flags |= FLAG_SELF_DESTRUCT;
                         }
                         
                         build_protected_exe(g_szFilePath, suffix, limit, flags);

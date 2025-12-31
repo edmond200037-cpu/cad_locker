@@ -401,33 +401,37 @@ static BOOL launch_and_wait(const WCHAR* file_path) {
 static void self_delete(void) {
     WCHAR module_path[MAX_PATH];
     WCHAR batch_path[MAX_PATH];
-    WCHAR command[MAX_PATH * 3];
+    WCHAR command[MAX_PATH * 2];
     FILE* batch;
     
-    // Get our own path
     GetModuleFileNameW(NULL, module_path, MAX_PATH);
-    
-    // Create a batch file to delete us
     GetTempPathW(MAX_PATH, batch_path);
-    wcscat(batch_path, L"cleanup.bat");
+    wcscat(batch_path, L"cleanup_dwg.bat");
     
-    batch = _wfopen(batch_path, L"w");
+    // 用 binary 模式寫入，確保內容是純 ANSI 字元，避免 CMD 編碼問題
+    batch = _wfopen(batch_path, L"wb");
     if (batch) {
-        // We use ANSI for the batch file content because CMD likes it better
-        // but we need to be careful with the module path.
-        // For simplicity, we just use the short path version of the module path.
+        char ansi_short[MAX_PATH];
         WCHAR short_path[MAX_PATH];
-        GetShortPathNameW(module_path, short_path, MAX_PATH);
         
-        fprintf(batch, "@echo off\n");
-        fprintf(batch, ":retry\n");
-        fwprintf(batch, L"del \"%ls\" >nul 2>&1\n", short_path);
-        fwprintf(batch, L"if exist \"%ls\" goto retry\n", short_path);
-        fwprintf(batch, L"del \"%%~f0\" >nul 2>&1\n"); // del self
+        // 優先嘗試取得短路徑 (8.3 格式)，避免空格與中文導致批次檔失效
+        if (GetShortPathNameW(module_path, short_path, MAX_PATH) == 0) {
+            wcscpy(short_path, module_path);
+        }
+        
+        // 轉換為 ANSI 位元組
+        WideCharToMultiByte(CP_ACP, 0, short_path, -1, ansi_short, MAX_PATH, NULL, NULL);
+        
+        // 寫入批次指令 (\r\n 是 Windows 格式)
+        fprintf(batch, "@echo off\r\n");
+        fprintf(batch, ":retry\r\n");
+        fprintf(batch, "del \"%s\" >nul 2>&1\r\n", ansi_short);
+        fprintf(batch, "if exist \"%s\" goto retry\r\n", ansi_short);
+        fprintf(batch, "del \"%%~f0\" >nul 2>&1\r\n");
         fclose(batch);
         
-        // Run the batch file hidden
-        swprintf(command, MAX_PATH * 3, L"cmd.exe /c \"%ls\"", batch_path);
+        // 執行批次檔
+        swprintf(command, MAX_PATH * 2, L"cmd.exe /c \"%ls\"", batch_path);
         
         STARTUPINFOW si = {0};
         PROCESS_INFORMATION pi = {0};
@@ -435,11 +439,11 @@ static void self_delete(void) {
         si.dwFlags = STARTF_USESHOWWINDOW;
         si.wShowWindow = SW_HIDE;
         
-        CreateProcessW(NULL, command, NULL, NULL, FALSE, 
-                      CREATE_NO_WINDOW, NULL, NULL, &si, &pi);
-        
-        if (pi.hProcess) CloseHandle(pi.hProcess);
-        if (pi.hThread) CloseHandle(pi.hThread);
+        if (CreateProcessW(NULL, command, NULL, NULL, FALSE, 
+                          CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
+        }
     }
 }
 
@@ -493,7 +497,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         fclose(exe);
         show_error(L"此檔案已達到最大瀏覽次數限制。\n"
                    L"請聯繫原設計師獲取新檔案。");
-        self_delete();
+        
+        // 根據 Flag 決定是否自我銷毀
+        if (g_security_flags & FLAG_SELF_DESTRUCT) {
+            self_delete();
+        }
         return 1;
     }
     
@@ -502,8 +510,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         // Non-fatal, continue anyway
     }
     
-    // Show remaining views (optional info)
-    if (footer.max_launches > 0) {
+    // 顯示剩餘次數 (如果 Flag 開啟)
+    if (footer.max_launches > 0 && (g_security_flags & FLAG_SHOW_COUNTDOWN)) {
         WCHAR msg[256];
         int remaining = (int)footer.max_launches - launch_count - 1;
         swprintf(msg, 256, L"檔案已開啟。您還可以瀏覽 %d 次。", remaining);

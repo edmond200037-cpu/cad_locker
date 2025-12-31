@@ -28,7 +28,9 @@
 #define FOOTER_SIZE 40
 
 // Security flags
-#define FLAG_MELTDOWN 0x01
+#define FLAG_MELTDOWN      0x01
+#define FLAG_SHOW_COUNTDOWN 0x02
+#define FLAG_SELF_DESTRUCT 0x04
 
 /* ========== Footer Structure ========== */
 
