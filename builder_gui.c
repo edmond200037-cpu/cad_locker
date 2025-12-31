@@ -31,8 +31,8 @@
 
 /* ========== Constants ========== */
 
-#define WINDOW_WIDTH  700
-#define WINDOW_HEIGHT 680
+#define WINDOW_WIDTH  750
+#define WINDOW_HEIGHT 780
 #define ID_BROWSE_BTN 1001
 #define ID_BUILD_BTN  1002
 #define ID_SUFFIX_EDIT 1003
@@ -408,34 +408,34 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             int sidebar_w = 100;
             int margin = 30;
             int x_start = sidebar_w + margin;
-            int y = 280;
+            int y = 280; // Start below the orange card (which ends at 250)
             
             // Suffix input
-            CreateWindowW(L"STATIC", L"輸入後綴 (Output Suffix)", WS_CHILD | WS_VISIBLE, x_start, y, 200, 20, hWnd, NULL, NULL, NULL);
-            g_hSuffixEdit = CreateWindowW(L"EDIT", L"_secure", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL, x_start, y + 25, 120, 25, hWnd, (HMENU)ID_SUFFIX_EDIT, NULL, NULL);
+            CreateWindowW(L"STATIC", L"輸入後綴 (Suffix)", WS_CHILD | WS_VISIBLE, x_start, y, 200, 25, hWnd, NULL, NULL, NULL);
+            g_hSuffixEdit = CreateWindowW(L"EDIT", L"_secure", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL, x_start, y + 30, 150, 30, hWnd, (HMENU)ID_SUFFIX_EDIT, NULL, NULL);
             
             // Limit input
-            CreateWindowW(L"STATIC", L"限制次數 (Launch Limit)", WS_CHILD | WS_VISIBLE, x_start + 220, y, 200, 20, hWnd, NULL, NULL, NULL);
-            g_hLimitEdit = CreateWindowW(L"EDIT", L"5", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_NUMBER, x_start + 220, y + 25, 80, 25, hWnd, (HMENU)ID_LIMIT_EDIT, NULL, NULL);
-            y += 85;
+            CreateWindowW(L"STATIC", L"限制次數 (Limit)", WS_CHILD | WS_VISIBLE, x_start + 220, y, 200, 25, hWnd, NULL, NULL, NULL);
+            g_hLimitEdit = CreateWindowW(L"EDIT", L"5", WS_CHILD | WS_VISIBLE | WS_BORDER | ES_NUMBER, x_start + 220, y + 30, 80, 30, hWnd, (HMENU)ID_LIMIT_EDIT, NULL, NULL);
+            y += 100;
             
             // Toggle Switches (BS_OWNERDRAW)
-            g_hMeltdownCheck = CreateWindowW(L"BUTTON", L"🔴 ENABLE MELTDOWN MODE", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, x_start, y, 400, 30, hWnd, (HMENU)ID_MELTDOWN_CHECK, NULL, NULL);
-            y += 40;
-            g_hShowPopupCheck = CreateWindowW(L"BUTTON", L"💬 SHOW REMAINING COUNT POPUP", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, x_start, y, 400, 30, hWnd, (HMENU)ID_SHOW_POPUP_CHECK, NULL, NULL);
-            y += 40;
-            g_hSelfDestructCheck = CreateWindowW(L"BUTTON", L"🗑️ AUTO SELF-DESTRUCT", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, x_start, y, 400, 30, hWnd, (HMENU)ID_SELF_DESTRUCT_CHECK, NULL, NULL);
-            y += 60;
+            g_hMeltdownCheck = CreateWindowW(L"BUTTON", L"🔴 啟用熔斷模式 (Meltdown)", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, x_start, y, 450, 35, hWnd, (HMENU)ID_MELTDOWN_CHECK, NULL, NULL);
+            y += 50;
+            g_hShowPopupCheck = CreateWindowW(L"BUTTON", L"💬 顯示剩餘次數彈窗", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, x_start, y, 450, 35, hWnd, (HMENU)ID_SHOW_POPUP_CHECK, NULL, NULL);
+            y += 50;
+            g_hSelfDestructCheck = CreateWindowW(L"BUTTON", L"🗑️ 自動自我銷毀 (Self-Destruct)", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, x_start, y, 450, 35, hWnd, (HMENU)ID_SELF_DESTRUCT_CHECK, NULL, NULL);
+            y += 70;
             
             // Build button
-            g_hBuildBtn = CreateWindowW(L"BUTTON", L"GENERATE PROTECTED EXE", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON | WS_DISABLED, x_start, y, 250, 45, hWnd, (HMENU)ID_BUILD_BTN, NULL, NULL);
-            y += 80;
-            
+            g_hBuildBtn = CreateWindowW(L"BUTTON", L"建立受保護執行檔", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON | WS_DISABLED, x_start, y, 300, 50, hWnd, (HMENU)ID_BUILD_BTN, NULL, NULL);
+            y += 90;
+
             // Browse button and status labels
-            CreateWindowW(L"BUTTON", L"BROWSE FILE...", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, x_start, y, 120, 30, hWnd, (HMENU)ID_BROWSE_BTN, NULL, NULL);
-            g_hFileLabel = CreateWindowW(L"STATIC", L"NO FILE SELECTED", WS_CHILD | WS_VISIBLE | SS_PATHELLIPSIS, x_start + 140, y + 5, 400, 20, hWnd, NULL, NULL, NULL);
-            y += 40;
-            g_hStatusLabel = CreateWindowW(L"STATIC", L"READY TO PROTECT", WS_CHILD | WS_VISIBLE, x_start, y, 400, 20, hWnd, NULL, NULL, NULL);
+            CreateWindowW(L"BUTTON", L"瀏覽檔案...", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, x_start, y, 150, 35, hWnd, (HMENU)ID_BROWSE_BTN, NULL, NULL);
+            g_hFileLabel = CreateWindowW(L"STATIC", L"尚未選擇檔案", WS_CHILD | WS_VISIBLE | SS_PATHELLIPSIS, x_start + 170, y + 5, 400, 25, hWnd, NULL, NULL, NULL);
+            y += 45;
+            g_hStatusLabel = CreateWindowW(L"STATIC", L"準備就緒", WS_CHILD | WS_VISIBLE, x_start, y, 450, 25, hWnd, NULL, NULL, NULL);
             
             load_settings();
             return 0;
@@ -481,7 +481,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             // 5. Vertical Sidebar Text
             SetTextColor(hdc, RGB_TEXT_SIDE);
             SelectObject(hdc, g_hVerticalFont);
-            TextOutW(hdc, 30, 450, L"2024 / DESIGN & SECURITY", 24);
+            TextOutW(hdc, 30, 450, L"2026 / DESIGN & SECURITY", 24);
             
             EndPaint(hWnd, &ps);
             return 0;
@@ -513,9 +513,9 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                 SetBkMode(hdc, TRANSPARENT);
                 SelectObject(hdc, g_hSmallFont);
                 if (pos > 0.5f) {
-                    TextOutW(hdc, 10, 7, L"ON", 2);
+                    TextOutW(hdc, 8, 7, L"開啟", 2);
                 } else {
-                    TextOutW(hdc, 32, 7, L"OFF", 3);
+                    TextOutW(hdc, 28, 7, L"關閉", 2);
                 }
                 
                 // Draw Thumb (Circle)
@@ -655,19 +655,19 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     g_hBlackBrush = CreateSolidBrush(RGB_BLACK);
     g_hGridPen = CreatePen(PS_SOLID, 1, RGB_GRID);
     
-    g_hFont = CreateFontW(14, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+    g_hFont = CreateFontW(18, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
                           DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                           CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Microsoft JhengHei");
     
-    g_hBigFont = CreateFontW(30, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+    g_hBigFont = CreateFontW(36, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                              CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Microsoft JhengHei");
                              
-    g_hSmallFont = CreateFontW(12, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+    g_hSmallFont = CreateFontW(16, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
                                DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Microsoft JhengHei");
                                
-    g_hVerticalFont = CreateFontW(16, 0, 900, 900, FW_BOLD, FALSE, FALSE, FALSE,
+    g_hVerticalFont = CreateFontW(20, 0, 900, 900, FW_BOLD, FALSE, FALSE, FALSE,
                                  DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                  CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Microsoft JhengHei");
     
