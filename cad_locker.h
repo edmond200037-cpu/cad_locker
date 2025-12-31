@@ -23,7 +23,6 @@
 
 // Registry settings
 #define REG_KEY_PATH L"Software\\MyCADLock"
-#define REG_BUILD_KEY_PATH L"Software\\MyCADLock\\Builder"
 
 // Footer size = payload_size (8 bytes) + max_launches (4 bytes) + file_id (16 bytes) + flags (4 bytes) + magic marker (8 bytes)
 #define FOOTER_SIZE 40
