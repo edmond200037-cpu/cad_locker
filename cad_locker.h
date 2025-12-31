@@ -22,20 +22,21 @@
 #define MAGIC_MARKER_LEN 8
 
 // Registry settings
-#define REG_KEY_PATH "Software\\MyCADLock"
-#define REG_VALUE_NAME "LaunchCount"
+#define REG_KEY_PATH L"Software\\MyCADLock"
+#define REG_VALUE_NAME L"LaunchCount"
 
 // Maximum number of launches allowed (0 = unlimited)
 #define MAX_LAUNCH_COUNT 5
 
-// Footer size = payload_size (8 bytes) + magic marker (8 bytes)
-#define FOOTER_SIZE 16
+// Footer size = payload_size (8 bytes) + max_launches (4 bytes) + magic marker (8 bytes)
+#define FOOTER_SIZE 20
 
 /* ========== Footer Structure ========== */
 
 #pragma pack(push, 1)
 typedef struct {
     uint64_t payload_size;          // Size of encrypted payload in bytes
+    uint32_t max_launches;          // Max number of allowed launches (0 = unlimited)
     char     magic[MAGIC_MARKER_LEN]; // Magic marker for validation
 } CADLockerFooter;
 #pragma pack(pop)

@@ -18,6 +18,8 @@
 
 #define WIN32_LEAN_AND_MEAN
 #define _CRT_SECURE_NO_WARNINGS
+#define UNICODE
+#define _UNICODE
 
 #include <windows.h>
 #include <shellapi.h>
@@ -25,17 +27,18 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <tchar.h>
 
 #include "cad_locker.h"
 
 /* ========== Error Handling ========== */
 
-static void show_error(const char* message) {
-    MessageBoxA(NULL, message, "CAD Locker Error", MB_OK | MB_ICONERROR);
+static void show_error(const WCHAR* message) {
+    MessageBoxW(NULL, message, L"CAD Locker Error", MB_OK | MB_ICONERROR);
 }
 
-static void show_info(const char* message) {
-    MessageBoxA(NULL, message, "CAD Locker", MB_OK | MB_ICONINFORMATION);
+static void show_info(const WCHAR* message) {
+    MessageBoxW(NULL, message, L"CAD Locker", MB_OK | MB_ICONINFORMATION);
 }
 
 /* ========== Registry Operations ========== */
@@ -48,13 +51,13 @@ static int get_launch_count(void) {
     DWORD size = sizeof(DWORD);
     LONG result;
     
-    result = RegOpenKeyExA(HKEY_CURRENT_USER, REG_KEY_PATH, 0, KEY_READ, &hKey);
+    result = RegOpenKeyExW(HKEY_CURRENT_USER, REG_KEY_PATH, 0, KEY_READ, &hKey);
     if (result != ERROR_SUCCESS) {
         // Key doesn't exist yet - first launch
         return 0;
     }
     
-    result = RegQueryValueExA(hKey, REG_VALUE_NAME, NULL, NULL, (LPBYTE)&count, &size);
+    result = RegQueryValueExW(hKey, REG_VALUE_NAME, NULL, NULL, (LPBYTE)&count, &size);
     RegCloseKey(hKey);
     
     if (result != ERROR_SUCCESS) {
@@ -73,7 +76,7 @@ static int increment_launch_count(void) {
     LONG result;
     
     // Create or open the registry key
-    result = RegCreateKeyExA(
+    result = RegCreateKeyExW(
         HKEY_CURRENT_USER,
         REG_KEY_PATH,
         0,
@@ -90,14 +93,14 @@ static int increment_launch_count(void) {
     }
     
     // Try to read current count
-    result = RegQueryValueExA(hKey, REG_VALUE_NAME, NULL, NULL, (LPBYTE)&count, &size);
+    result = RegQueryValueExW(hKey, REG_VALUE_NAME, NULL, NULL, (LPBYTE)&count, &size);
     if (result != ERROR_SUCCESS) {
         count = 0;
     }
     
     // Increment and save
     count++;
-    result = RegSetValueExA(hKey, REG_VALUE_NAME, 0, REG_DWORD, (LPBYTE)&count, sizeof(DWORD));
+    result = RegSetValueExW(hKey, REG_VALUE_NAME, 0, REG_DWORD, (LPBYTE)&count, sizeof(DWORD));
     RegCloseKey(hKey);
     
     if (result != ERROR_SUCCESS) {
@@ -110,15 +113,15 @@ static int increment_launch_count(void) {
 /* ========== File Operations ========== */
 
 // Securely delete a file by overwriting with zeros first
-static BOOL secure_delete_file(const char* path) {
+static BOOL secure_delete_file(const WCHAR* path) {
     FILE* f;
     long size;
     unsigned char zeros[4096] = {0};
     
     // Open file and get size
-    f = fopen(path, "r+b");
+    f = _wfopen(path, L"r+b");
     if (!f) {
-        return DeleteFileA(path);  // Try normal delete if can't open
+        return DeleteFileW(path);  // Try normal delete if can't open
     }
     
     fseek(f, 0, SEEK_END);
@@ -136,7 +139,7 @@ static BOOL secure_delete_file(const char* path) {
     fclose(f);
     
     // Now delete the file
-    return DeleteFileA(path);
+    return DeleteFileW(path);
 }
 
 // Read footer from end of executable
@@ -160,43 +163,43 @@ static BOOL read_footer(FILE* exe, CADLockerFooter* footer) {
 }
 
 // Extract and decrypt payload to temp file
-static char* extract_payload(FILE* exe, const CADLockerFooter* footer) {
-    static char temp_path[MAX_PATH];
-    char temp_dir[MAX_PATH];
+static WCHAR* extract_payload(FILE* exe, const CADLockerFooter* footer) {
+    static WCHAR temp_path[MAX_PATH];
+    WCHAR temp_dir[MAX_PATH];
     unsigned char* buffer = NULL;
     FILE* out = NULL;
     long payload_offset;
     
     // Get temp directory
-    if (GetTempPathA(MAX_PATH, temp_dir) == 0) {
-        show_error("Failed to get temp directory");
+    if (GetTempPathW(MAX_PATH, temp_dir) == 0) {
+        show_error(L"Failed to get temp directory");
         return NULL;
     }
     
     // Generate unique temp filename
-    if (GetTempFileNameA(temp_dir, "CAD", 0, temp_path) == 0) {
-        show_error("Failed to create temp file");
+    if (GetTempFileNameW(temp_dir, L"CAD", 0, temp_path) == 0) {
+        show_error(L"Failed to create temp file");
         return NULL;
     }
     
     // Rename to .dwg extension
-    char dwg_path[MAX_PATH];
-    strcpy(dwg_path, temp_path);
-    char* ext = strrchr(dwg_path, '.');
+    WCHAR dwg_path[MAX_PATH];
+    wcscpy(dwg_path, temp_path);
+    WCHAR* ext = wcsrchr(dwg_path, L'.');
     if (ext) {
-        strcpy(ext, ".dwg");
+        wcscpy(ext, L".dwg");
     } else {
-        strcat(dwg_path, ".dwg");
+        wcscat(dwg_path, L".dwg");
     }
     
     // Delete the placeholder temp file and use our .dwg name
-    DeleteFileA(temp_path);
-    strcpy(temp_path, dwg_path);
+    DeleteFileW(temp_path);
+    wcscpy(temp_path, dwg_path);
     
     // Allocate buffer for payload
     buffer = (unsigned char*)malloc((size_t)footer->payload_size);
     if (!buffer) {
-        show_error("Out of memory");
+        show_error(L"Out of memory");
         return NULL;
     }
     
@@ -204,14 +207,14 @@ static char* extract_payload(FILE* exe, const CADLockerFooter* footer) {
     // Payload is just before the footer
     payload_offset = -(long)(footer->payload_size + FOOTER_SIZE);
     if (fseek(exe, payload_offset, SEEK_END) != 0) {
-        show_error("Failed to seek to payload");
+        show_error(L"Failed to seek to payload");
         free(buffer);
         return NULL;
     }
     
     // Read encrypted payload
     if (fread(buffer, 1, (size_t)footer->payload_size, exe) != (size_t)footer->payload_size) {
-        show_error("Failed to read payload");
+        show_error(L"Failed to read payload");
         free(buffer);
         return NULL;
     }
@@ -220,18 +223,18 @@ static char* extract_payload(FILE* exe, const CADLockerFooter* footer) {
     xor_crypt(buffer, (size_t)footer->payload_size);
     
     // Write to temp file
-    out = fopen(temp_path, "wb");
+    out = _wfopen(temp_path, L"wb");
     if (!out) {
-        show_error("Failed to create temp file");
+        show_error(L"Failed to create temp file");
         free(buffer);
         return NULL;
     }
     
     if (fwrite(buffer, 1, (size_t)footer->payload_size, out) != (size_t)footer->payload_size) {
-        show_error("Failed to write temp file");
+        show_error(L"Failed to write temp file");
         fclose(out);
         free(buffer);
-        DeleteFileA(temp_path);
+        DeleteFileW(temp_path);
         return NULL;
     }
     
@@ -242,20 +245,20 @@ static char* extract_payload(FILE* exe, const CADLockerFooter* footer) {
 }
 
 // Launch CAD file with default viewer and wait for it to close
-static BOOL launch_and_wait(const char* file_path) {
-    SHELLEXECUTEINFOA sei = {0};
+static BOOL launch_and_wait(const WCHAR* file_path) {
+    SHELLEXECUTEINFOW sei = {0};
     
-    sei.cbSize = sizeof(SHELLEXECUTEINFOA);
+    sei.cbSize = sizeof(SHELLEXECUTEINFOW);
     sei.fMask = SEE_MASK_NOCLOSEPROCESS;
     sei.hwnd = NULL;
-    sei.lpVerb = "open";
+    sei.lpVerb = L"open";
     sei.lpFile = file_path;
     sei.lpParameters = NULL;
     sei.lpDirectory = NULL;
     sei.nShow = SW_SHOWNORMAL;
     
-    if (!ShellExecuteExA(&sei)) {
-        show_error("Failed to open CAD file.\nMake sure you have a CAD viewer installed.");
+    if (!ShellExecuteExW(&sei)) {
+        show_error(L"無法開啟 CAD 檔案。\n請確認您已安裝 CAD 檢視器。");
         return FALSE;
     }
     
@@ -271,37 +274,43 @@ static BOOL launch_and_wait(const char* file_path) {
 /* ========== Self-Delete Function ========== */
 
 static void self_delete(void) {
-    char module_path[MAX_PATH];
-    char batch_path[MAX_PATH];
-    char command[MAX_PATH * 3];
+    WCHAR module_path[MAX_PATH];
+    WCHAR batch_path[MAX_PATH];
+    WCHAR command[MAX_PATH * 3];
     FILE* batch;
     
     // Get our own path
-    GetModuleFileNameA(NULL, module_path, MAX_PATH);
+    GetModuleFileNameW(NULL, module_path, MAX_PATH);
     
     // Create a batch file to delete us
-    GetTempPathA(MAX_PATH, batch_path);
-    strcat(batch_path, "cleanup.bat");
+    GetTempPathW(MAX_PATH, batch_path);
+    wcscat(batch_path, L"cleanup.bat");
     
-    batch = fopen(batch_path, "w");
+    batch = _wfopen(batch_path, L"w");
     if (batch) {
+        // We use ANSI for the batch file content because CMD likes it better
+        // but we need to be careful with the module path.
+        // For simplicity, we just use the short path version of the module path.
+        WCHAR short_path[MAX_PATH];
+        GetShortPathNameW(module_path, short_path, MAX_PATH);
+        
         fprintf(batch, "@echo off\n");
         fprintf(batch, ":retry\n");
-        fprintf(batch, "del \"%s\" >nul 2>&1\n", module_path);
-        fprintf(batch, "if exist \"%s\" goto retry\n", module_path);
-        fprintf(batch, "del \"%s\" >nul 2>&1\n", batch_path);
+        fwprintf(batch, L"del \"%ls\" >nul 2>&1\n", short_path);
+        fwprintf(batch, L"if exist \"%ls\" goto retry\n", short_path);
+        fwprintf(batch, L"del \"%%~f0\" >nul 2>&1\n"); // del self
         fclose(batch);
         
         // Run the batch file hidden
-        sprintf(command, "cmd.exe /c \"%s\"", batch_path);
+        swprintf(command, MAX_PATH * 3, L"cmd.exe /c \"%ls\"", batch_path);
         
-        STARTUPINFOA si = {0};
+        STARTUPINFOW si = {0};
         PROCESS_INFORMATION pi = {0};
         si.cb = sizeof(si);
         si.dwFlags = STARTF_USESHOWWINDOW;
         si.wShowWindow = SW_HIDE;
         
-        CreateProcessA(NULL, command, NULL, NULL, FALSE, 
+        CreateProcessW(NULL, command, NULL, NULL, FALSE, 
                       CREATE_NO_WINDOW, NULL, NULL, &si, &pi);
         
         if (pi.hProcess) CloseHandle(pi.hProcess);
@@ -311,12 +320,12 @@ static void self_delete(void) {
 
 /* ========== Main Entry Point ========== */
 
-int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, 
-                   LPSTR lpCmdLine, int nCmdShow) {
-    char exe_path[MAX_PATH];
+int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, 
+                   LPWSTR lpCmdLine, int nCmdShow) {
+    WCHAR exe_path[MAX_PATH];
     FILE* exe = NULL;
     CADLockerFooter footer;
-    char* temp_file = NULL;
+    WCHAR* temp_file = NULL;
     int launch_count;
     
     (void)hInstance;
@@ -325,33 +334,33 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     (void)nCmdShow;
     
     // Get our own executable path
-    if (GetModuleFileNameA(NULL, exe_path, MAX_PATH) == 0) {
-        show_error("Failed to get executable path");
+    if (GetModuleFileNameW(NULL, exe_path, MAX_PATH) == 0) {
+        show_error(L"Failed to get executable path");
         return 1;
     }
     
     // Open ourselves for reading
-    exe = fopen(exe_path, "rb");
+    exe = _wfopen(exe_path, L"rb");
     if (!exe) {
-        show_error("Failed to open executable for reading");
+        show_error(L"Failed to open executable for reading");
         return 1;
     }
     
     // Read and validate footer
     if (!read_footer(exe, &footer)) {
         fclose(exe);
-        show_error("This file does not contain a valid CAD payload.\n"
-                   "It may be corrupted or not properly bundled.");
+        show_error(L"此檔案未包含有效的 CAD 加密資料。\n"
+                   L"可能已損壞或未正確封裝。");
         return 1;
     }
     
     // Check launch count
     launch_count = get_launch_count();
     
-    if (MAX_LAUNCH_COUNT > 0 && launch_count >= MAX_LAUNCH_COUNT) {
+    if (footer.max_launches > 0 && launch_count >= (int)footer.max_launches) {
         fclose(exe);
-        show_error("This CAD file has reached its maximum view limit.\n"
-                   "Please contact the designer for a new copy.");
+        show_error(L"此檔案已達到最大瀏覽次數限制。\n"
+                   L"請聯繫原設計師獲取新檔案。");
         self_delete();
         return 1;
     }
@@ -362,10 +371,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     }
     
     // Show remaining views (optional info)
-    if (MAX_LAUNCH_COUNT > 0) {
-        char msg[256];
-        int remaining = MAX_LAUNCH_COUNT - launch_count - 1;
-        sprintf(msg, "CAD file opened. You have %d view(s) remaining.", remaining);
+    if (footer.max_launches > 0) {
+        WCHAR msg[256];
+        int remaining = (int)footer.max_launches - launch_count - 1;
+        swprintf(msg, 256, L"檔案已開啟。您還可以瀏覽 %d 次。", remaining);
         show_info(msg);
     }
     
@@ -381,13 +390,19 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     launch_and_wait(temp_file);
     
     // Clean up temp file securely
-    if (!secure_delete_file(temp_file)) {
-        // If secure delete failed, try normal delete
-        DeleteFileA(temp_file);
-    }
+    secure_delete_file(temp_file);
     
     return 0;
 }
+
+/* MinGW compatibility: WinMain entry point */
+#if defined(__GNUC__) && !defined(_MSC_VER)
+int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, 
+                   LPSTR lpCmdLine, int nCmdShow) {
+    (void)lpCmdLine;
+    return wWinMain(hInstance, hPrevInstance, GetCommandLineW(), nCmdShow);
+}
+#endif
 
 /* Console entry point for testing */
 #ifndef _WINDOWS

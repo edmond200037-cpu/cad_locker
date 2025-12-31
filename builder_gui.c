@@ -1,0 +1,553 @@
+/*
+ * builder_gui.c - CAD Locker Builder GUI Version
+ * 
+ * Win32 GUI application with drag-and-drop support.
+ * Drag a .dwg file onto the window to encrypt and bundle it.
+ * 
+ * Compile with GCC:
+ *   gcc -O2 -o builder.exe builder_gui.c -lgdi32 -lshell32 -lcomdlg32 -mwindows
+ * 
+ * Compile with MSVC:
+ *   cl /Fe:builder.exe builder_gui.c /link gdi32.lib shell32.lib comdlg32.lib user32.lib
+ */
+
+#define WIN32_LEAN_AND_MEAN
+#define _CRT_SECURE_NO_WARNINGS
+#define UNICODE
+#define _UNICODE
+
+#include <windows.h>
+#include <shellapi.h>
+#include <shlwapi.h>
+#include <commdlg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+#include <tchar.h>
+
+#include "cad_locker.h"
+
+/* ========== Constants ========== */
+
+#define WINDOW_WIDTH  500
+#define WINDOW_HEIGHT 400
+#define ID_BROWSE_BTN 1001
+#define ID_BUILD_BTN  1002
+#define ID_SUFFIX_EDIT 1003
+#define ID_LIMIT_EDIT 1004
+
+#define STUB_FILENAME L"stub.exe"
+
+/* ========== Global Variables ========== */
+
+static HWND g_hWnd = NULL;
+static HWND g_hDropLabel = NULL;
+static HWND g_hFileLabel = NULL;
+static HWND g_hSuffixEdit = NULL;
+static HWND g_hLimitEdit = NULL;
+static HWND g_hStatusLabel = NULL;
+static HWND g_hBuildBtn = NULL;
+static WCHAR g_szFilePath[MAX_PATH] = {0};
+static HBRUSH g_hBgBrush = NULL;
+static HFONT g_hFont = NULL;
+static HFONT g_hBigFont = NULL;
+
+/* ========== Utility Functions ========== */
+
+// Read entire file into memory (ANSI version for binary files)
+static unsigned char* read_file_binary(const WCHAR* path, size_t* out_size) {
+    FILE* f;
+    long size;
+    unsigned char* buffer;
+    
+    f = _wfopen(path, L"rb");
+    if (!f) return NULL;
+    
+    fseek(f, 0, SEEK_END);
+    size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    
+    if (size <= 0) {
+        fclose(f);
+        return NULL;
+    }
+    
+    buffer = (unsigned char*)malloc((size_t)size);
+    if (!buffer) {
+        fclose(f);
+        return NULL;
+    }
+    
+    if (fread(buffer, 1, (size_t)size, f) != (size_t)size) {
+        free(buffer);
+        fclose(f);
+        return NULL;
+    }
+    
+    fclose(f);
+    *out_size = (size_t)size;
+    return buffer;
+}
+
+// Get directory containing the builder executable
+static void get_builder_dir(WCHAR* out_dir, size_t max_len) {
+    // Get full path to this executable
+    DWORD len = GetModuleFileNameW(NULL, out_dir, (DWORD)max_len);
+    if (len == 0 || len >= max_len) {
+        // Fallback to current directory
+        GetCurrentDirectoryW((DWORD)max_len, out_dir);
+        size_t dirlen = wcslen(out_dir);
+        if (dirlen > 0 && dirlen < max_len - 1) {
+            out_dir[dirlen] = L'\\';
+            out_dir[dirlen + 1] = L'\0';
+        }
+        return;
+    }
+    
+    // Use PathRemoveFileSpec to remove filename, leaving just directory
+    PathRemoveFileSpecW(out_dir);
+    
+    // Append trailing backslash
+    size_t dirlen = wcslen(out_dir);
+    if (dirlen > 0 && dirlen < max_len - 1) {
+        out_dir[dirlen] = L'\\';
+        out_dir[dirlen + 1] = L'\0';
+    }
+}
+
+// Get filename without path
+static const WCHAR* get_filename(const WCHAR* path) {
+    const WCHAR* name = NULL;
+    for (const WCHAR* p = path; *p; p++) {
+        if (*p == 0x005C || *p == 0x002F) name = p;  // backslash or forward slash
+    }
+    return name ? name + 1 : path;
+}
+
+// Get basename without extension
+static void get_basename(const WCHAR* path, WCHAR* out_name, size_t max_len) {
+    const WCHAR* filename = get_filename(path);
+    wcsncpy(out_name, filename, max_len - 1);
+    out_name[max_len - 1] = L'\0';
+    
+    WCHAR* ext = wcsrchr(out_name, L'.');
+    if (ext) *ext = L'\0';
+}
+
+// Get directory from path
+static void get_dir(const WCHAR* path, WCHAR* out_dir, size_t max_len) {
+    wcsncpy(out_dir, path, max_len - 1);
+    out_dir[max_len - 1] = L'\0';
+    
+    // Find last path separator (backslash=0x005C, forward slash=0x002F)
+    WCHAR* last_slash = NULL;
+    for (WCHAR* p = out_dir; *p; p++) {
+        if (*p == 0x005C || *p == 0x002F) last_slash = p;
+    }
+    
+    if (last_slash) {
+        *(last_slash + 1) = L'\0';
+    } else {
+        out_dir[0] = L'.';
+        out_dir[1] = 0x005C;
+        out_dir[2] = L'\0';
+    }
+}
+
+/* ========== Build Logic ========== */
+
+static BOOL build_protected_exe(const WCHAR* dwg_path, const WCHAR* suffix, int max_launches) {
+    WCHAR builder_dir[MAX_PATH];
+    WCHAR stub_path[MAX_PATH];
+    WCHAR output_dir[MAX_PATH];
+    WCHAR basename[MAX_PATH];
+    WCHAR output_path[MAX_PATH];
+    WCHAR status_msg[512];
+    
+    unsigned char* stub_data = NULL;
+    unsigned char* dwg_data = NULL;
+    size_t stub_size = 0;
+    size_t dwg_size = 0;
+    FILE* out = NULL;
+    CADLockerFooter footer;
+    BOOL result = FALSE;
+    
+    // Get paths
+    get_builder_dir(builder_dir, MAX_PATH);
+    PathCombineW(stub_path, builder_dir, STUB_FILENAME);
+    
+    get_dir(dwg_path, output_dir, MAX_PATH);
+    get_basename(dwg_path, basename, MAX_PATH);
+    swprintf(output_path, MAX_PATH, L"%ls%ls%ls.exe", output_dir, basename, suffix);
+    
+    // Update status
+    SetWindowTextW(g_hStatusLabel, L"正在讀取 stub.exe...");
+    
+    // Check if stub.exe exists
+    DWORD attrs = GetFileAttributesW(stub_path);
+    if (attrs == INVALID_FILE_ATTRIBUTES) {
+        swprintf(status_msg, 512, 
+            L"錯誤：找不到 stub.exe\n\n"
+            L"請確認 stub.exe 與 builder.exe 在同一目錄\n\n"
+            L"搜尋路徑：\n%ls\n\n"
+            L"Builder 目錄：\n%ls",
+            stub_path, builder_dir);
+        MessageBoxW(g_hWnd, status_msg, L"建置失敗", MB_OK | MB_ICONERROR);
+        goto cleanup;
+    }
+    
+    // Read stub
+    stub_data = read_file_binary(stub_path, &stub_size);
+    if (!stub_data) {
+        swprintf(status_msg, 512, L"錯誤：無法讀取 stub.exe\n路徑：%ls", stub_path);
+        MessageBoxW(g_hWnd, status_msg, L"建置失敗", MB_OK | MB_ICONERROR);
+        goto cleanup;
+    }
+    
+    // Update status
+    SetWindowTextW(g_hStatusLabel, L"正在讀取 CAD 檔案...");
+    
+    // Read DWG
+    dwg_data = read_file_binary(dwg_path, &dwg_size);
+    if (!dwg_data) {
+        MessageBoxW(g_hWnd, L"錯誤：無法讀取 CAD 檔案", L"建置失敗", MB_OK | MB_ICONERROR);
+        goto cleanup;
+    }
+    
+    // Update status
+    SetWindowTextW(g_hStatusLabel, L"正在加密...");
+    
+    // Encrypt
+    xor_crypt(dwg_data, dwg_size);
+    
+    // Prepare footer
+    footer.payload_size = (uint64_t)dwg_size;
+    footer.max_launches = (uint32_t)max_launches;
+    memcpy(footer.magic, MAGIC_MARKER, MAGIC_MARKER_LEN);
+    
+    // Update status
+    SetWindowTextW(g_hStatusLabel, L"正在建立受保護檔案...");
+    
+    // Create output
+    out = _wfopen(output_path, L"wb");
+    if (!out) {
+        swprintf(status_msg, 512, L"錯誤：無法建立輸出檔案\n路徑：%ls", output_path);
+        MessageBoxW(g_hWnd, status_msg, L"建置失敗", MB_OK | MB_ICONERROR);
+        goto cleanup;
+    }
+    
+    // Write stub + encrypted payload + footer
+    fwrite(stub_data, 1, stub_size, out);
+    fwrite(dwg_data, 1, dwg_size, out);
+    fwrite(&footer, sizeof(footer), 1, out);
+    
+    fclose(out);
+    out = NULL;
+    
+    // Success!
+    swprintf(status_msg, 512, 
+        L"✅ 建置成功！\n\n"
+        L"輸出檔案：\n%ls\n\n"
+        L"大小：%.1f KB",
+        output_path, 
+        (stub_size + dwg_size + (double)sizeof(footer)) / 1024.0);
+    
+    MessageBoxW(g_hWnd, status_msg, L"CAD Locker", MB_OK | MB_ICONINFORMATION);
+    
+    SetWindowTextW(g_hStatusLabel, L"✅ 建置完成！");
+    result = TRUE;
+    
+cleanup:
+    if (out) fclose(out);
+    if (stub_data) free(stub_data);
+    if (dwg_data) free(dwg_data);
+    
+    return result;
+}
+
+/* ========== File Selection ========== */
+
+static void select_file_from_dialog(void) {
+    OPENFILENAMEW ofn = {0};
+    WCHAR szFile[MAX_PATH] = {0};
+    
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = g_hWnd;
+    ofn.lpstrFile = szFile;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.lpstrFilter = L"CAD 檔案 (*.dwg)\0*.dwg\0所有檔案 (*.*)\0*.*\0";
+    ofn.nFilterIndex = 1;
+    ofn.lpstrTitle = L"選擇要加密的 CAD 檔案";
+    ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
+    
+    if (GetOpenFileNameW(&ofn)) {
+        wcscpy(g_szFilePath, szFile);
+        SetWindowTextW(g_hFileLabel, get_filename(g_szFilePath));
+        EnableWindow(g_hBuildBtn, TRUE);
+        SetWindowTextW(g_hStatusLabel, L"已選擇檔案，請設定後綴名後按「建立」");
+    }
+}
+
+static void handle_dropped_file(HDROP hDrop) {
+    WCHAR szFile[MAX_PATH];
+    
+    if (DragQueryFileW(hDrop, 0, szFile, MAX_PATH)) {
+        // Check extension
+        WCHAR* ext = wcsrchr(szFile, L'.');
+        if (ext && _wcsicmp(ext, L".dwg") == 0) {
+            wcscpy(g_szFilePath, szFile);
+            SetWindowTextW(g_hFileLabel, get_filename(g_szFilePath));
+            EnableWindow(g_hBuildBtn, TRUE);
+            SetWindowTextW(g_hStatusLabel, L"已選擇檔案，請設定後綴名後按「建立」");
+        } else {
+            MessageBoxW(g_hWnd, L"請拖放 .dwg 檔案", L"格式錯誤", MB_OK | MB_ICONWARNING);
+        }
+    }
+    
+    DragFinish(hDrop);
+}
+
+/* ========== Window Procedure ========== */
+
+static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    switch (msg) {
+        case WM_CREATE: {
+            // Create controls
+            int y = 20;
+            
+            // Title
+            g_hDropLabel = CreateWindowW(
+                L"STATIC", L"🔒 CAD Locker Builder",
+                WS_CHILD | WS_VISIBLE | SS_CENTER,
+                20, y, WINDOW_WIDTH - 40, 40,
+                hWnd, NULL, NULL, NULL);
+            SendMessageW(g_hDropLabel, WM_SETFONT, (WPARAM)g_hBigFont, TRUE);
+            y += 50;
+            
+            // Drop zone
+            CreateWindowW(
+                L"STATIC", L"",
+                WS_CHILD | WS_VISIBLE | SS_ETCHEDFRAME,
+                30, y, WINDOW_WIDTH - 60, 80,
+                hWnd, NULL, NULL, NULL);
+            
+            CreateWindowW(
+                L"STATIC", L"📁 拖放 DWG 檔案到此處\n或點擊「瀏覽」按鈕選擇",
+                WS_CHILD | WS_VISIBLE | SS_CENTER,
+                40, y + 20, WINDOW_WIDTH - 80, 50,
+                hWnd, NULL, NULL, NULL);
+            y += 95;
+            
+            // Browse button
+            CreateWindowW(
+                L"BUTTON", L"瀏覽...",
+                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                WINDOW_WIDTH / 2 - 50, y, 100, 30,
+                hWnd, (HMENU)ID_BROWSE_BTN, NULL, NULL);
+            y += 45;
+            
+            // Selected file label
+            CreateWindowW(
+                L"STATIC", L"已選擇檔案：",
+                WS_CHILD | WS_VISIBLE,
+                30, y, 100, 20,
+                hWnd, NULL, NULL, NULL);
+            
+            g_hFileLabel = CreateWindowW(
+                L"STATIC", L"(尚未選擇)",
+                WS_CHILD | WS_VISIBLE | SS_PATHELLIPSIS,
+                130, y, WINDOW_WIDTH - 160, 20,
+                hWnd, NULL, NULL, NULL);
+            y += 30;
+            
+            // Suffix input
+            CreateWindowW(
+                L"STATIC", L"輸出後綴：",
+                WS_CHILD | WS_VISIBLE,
+                30, y + 3, 100, 20,
+                hWnd, NULL, NULL, NULL);
+            
+            g_hSuffixEdit = CreateWindowW(
+                L"EDIT", L"_secure",
+                WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
+                130, y, 120, 25,
+                hWnd, (HMENU)ID_SUFFIX_EDIT, NULL, NULL);
+            y += 35;
+            
+            // Limit input
+            CreateWindowW(
+                L"STATIC", L"瀏覽次數：",
+                WS_CHILD | WS_VISIBLE,
+                30, y + 3, 100, 20,
+                hWnd, NULL, NULL, NULL);
+            
+            g_hLimitEdit = CreateWindowW(
+                L"EDIT", L"5",
+                WS_CHILD | WS_VISIBLE | WS_BORDER | ES_NUMBER,
+                130, y, 60, 25,
+                hWnd, (HMENU)ID_LIMIT_EDIT, NULL, NULL);
+            
+            CreateWindowW(
+                L"STATIC", L"(0 = 無限制)",
+                WS_CHILD | WS_VISIBLE,
+                200, y + 3, 100, 20,
+                hWnd, NULL, NULL, NULL);
+            y += 40;
+            
+            // Build button
+            g_hBuildBtn = CreateWindowW(
+                L"BUTTON", L"🔐 建立受保護檔案",
+                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON | WS_DISABLED,
+                WINDOW_WIDTH / 2 - 80, y, 160, 35,
+                hWnd, (HMENU)ID_BUILD_BTN, NULL, NULL);
+            y += 50;
+            
+            // Status label
+            g_hStatusLabel = CreateWindowW(
+                L"STATIC", L"等待拖放檔案...",
+                WS_CHILD | WS_VISIBLE | SS_CENTER,
+                20, y, WINDOW_WIDTH - 40, 20,
+                hWnd, NULL, NULL, NULL);
+            
+            return 0;
+        }
+        
+        case WM_DROPFILES:
+            handle_dropped_file((HDROP)wParam);
+            return 0;
+        
+        case WM_COMMAND:
+            switch (LOWORD(wParam)) {
+                case ID_BROWSE_BTN:
+                    select_file_from_dialog();
+                    break;
+                
+                case ID_BUILD_BTN:
+                    if (g_szFilePath[0]) {
+                        WCHAR suffix[64];
+                        WCHAR limit_str[16];
+                        int limit = 5;
+                        
+                        GetWindowTextW(g_hSuffixEdit, suffix, 64);
+                        if (wcslen(suffix) == 0) {
+                            wcscpy(suffix, L"_secure");
+                        }
+                        
+                        GetWindowTextW(g_hLimitEdit, limit_str, 16);
+                        if (wcslen(limit_str) > 0) {
+                            limit = _wtoi(limit_str);
+                        }
+                        
+                        build_protected_exe(g_szFilePath, suffix, limit);
+                    }
+                    break;
+            }
+            return 0;
+        
+        case WM_CTLCOLORSTATIC: {
+            HDC hdc = (HDC)wParam;
+            SetBkColor(hdc, RGB(245, 245, 250));
+            SetTextColor(hdc, RGB(50, 50, 60));
+            return (LRESULT)g_hBgBrush;
+        }
+        
+        case WM_DESTROY:
+            PostQuitMessage(0);
+            return 0;
+    }
+    
+    return DefWindowProcW(hWnd, msg, wParam, lParam);
+}
+
+/* ========== Callback for setting font on child windows ========== */
+
+static BOOL CALLBACK SetFontCallback(HWND hwnd, LPARAM lParam) {
+    SendMessageW(hwnd, WM_SETFONT, (WPARAM)lParam, TRUE);
+    return TRUE;
+}
+
+/* ========== Main Entry Point ========== */
+
+int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, 
+                    LPWSTR lpCmdLine, int nCmdShow) {
+    WNDCLASSEXW wc = {0};
+    MSG msg;
+    
+    (void)hPrevInstance;
+    (void)lpCmdLine;
+    
+    // Create resources
+    g_hBgBrush = CreateSolidBrush(RGB(245, 245, 250));
+    g_hFont = CreateFontW(16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                          DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                          CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Microsoft JhengHei UI");
+    g_hBigFont = CreateFontW(28, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+                             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                             CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Microsoft JhengHei UI");
+    
+    // Register window class
+    wc.cbSize = sizeof(WNDCLASSEXW);
+    wc.style = CS_HREDRAW | CS_VREDRAW;
+    wc.lpfnWndProc = WndProc;
+    wc.hInstance = hInstance;
+    wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+    wc.hbrBackground = g_hBgBrush;
+    wc.lpszClassName = L"CADLockerBuilder";
+    wc.hIcon = LoadIcon(NULL, IDI_APPLICATION);
+    wc.hIconSm = LoadIcon(NULL, IDI_APPLICATION);
+    
+    if (!RegisterClassExW(&wc)) {
+        MessageBoxW(NULL, L"視窗類別註冊失敗", L"錯誤", MB_OK | MB_ICONERROR);
+        return 1;
+    }
+    
+    // Calculate window position (center of screen)
+    int screenW = GetSystemMetrics(SM_CXSCREEN);
+    int screenH = GetSystemMetrics(SM_CYSCREEN);
+    int posX = (screenW - WINDOW_WIDTH) / 2;
+    int posY = (screenH - WINDOW_HEIGHT) / 2;
+    
+    // Create window
+    g_hWnd = CreateWindowExW(
+        WS_EX_ACCEPTFILES,  // Enable drag-and-drop
+        L"CADLockerBuilder",
+        L"CAD Locker Builder",
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
+        posX, posY, WINDOW_WIDTH, WINDOW_HEIGHT,
+        NULL, NULL, hInstance, NULL);
+    
+    if (!g_hWnd) {
+        MessageBoxW(NULL, L"視窗建立失敗", L"錯誤", MB_OK | MB_ICONERROR);
+        return 1;
+    }
+    
+    // Set default font for all controls
+    EnumChildWindows(g_hWnd, SetFontCallback, (LPARAM)g_hFont);
+    
+    // Show window
+    ShowWindow(g_hWnd, nCmdShow);
+    UpdateWindow(g_hWnd);
+    
+    // Message loop
+    while (GetMessageW(&msg, NULL, 0, 0)) {
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+    
+    // Cleanup
+    DeleteObject(g_hBgBrush);
+    DeleteObject(g_hFont);
+    DeleteObject(g_hBigFont);
+    
+    return (int)msg.wParam;
+}
+
+/* MinGW compatibility: WinMain entry point */
+#if defined(__GNUC__) && !defined(_MSC_VER)
+int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, 
+                   LPSTR lpCmdLine, int nCmdShow) {
+    (void)lpCmdLine;
+    return wWinMain(hInstance, hPrevInstance, GetCommandLineW(), nCmdShow);
+}
+#endif
