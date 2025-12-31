@@ -32,7 +32,7 @@
 /* ========== Constants ========== */
 
 #define WINDOW_WIDTH  500
-#define WINDOW_HEIGHT 650
+#define WINDOW_HEIGHT 520
 #define ID_BROWSE_BTN 1001
 #define ID_BUILD_BTN  1002
 #define ID_SUFFIX_EDIT 1003
@@ -40,8 +40,6 @@
 #define ID_MELTDOWN_CHECK 1005
 #define ID_SHOW_POPUP_CHECK 1006
 #define ID_SELF_DESTRUCT_CHECK 1007
-#define ID_ICON_BROWSE_BTN 1008
-#define ID_SAVE_SETTINGS_CHECK 1009
 
 #define STUB_FILENAME L"stub.exe"
 
@@ -55,12 +53,9 @@ static HWND g_hLimitEdit = NULL;
 static HWND g_hMeltdownCheck = NULL;
 static HWND g_hShowPopupCheck = NULL;
 static HWND g_hSelfDestructCheck = NULL;
-static HWND g_hIconLabel = NULL;
-static HWND g_hSaveSettingsCheck = NULL;
 static HWND g_hStatusLabel = NULL;
 static HWND g_hBuildBtn = NULL;
 static WCHAR g_szFilePath[MAX_PATH] = {0};
-static WCHAR g_szIconPath[MAX_PATH] = {0};
 static HBRUSH g_hBgBrush = NULL;
 static HFONT g_hFont = NULL;
 static HFONT g_hBigFont = NULL;
@@ -167,107 +162,6 @@ static void get_dir(const WCHAR* path, WCHAR* out_dir, size_t max_len) {
     }
 }
 
-#pragma pack(push, 1)
-typedef struct {
-    WORD           idReserved;   // Reserved (must be 0)
-    WORD           idType;       // Resource Type (1 for icons)
-    WORD           idCount;      // How many images?
-} ICONDIR;
-
-typedef struct {
-    BYTE           bWidth;          // Width, in pixels
-    BYTE           bHeight;         // Height, in pixels
-    BYTE           bColorCount;     // Number of colors in image (0 if >=8bpp)
-    BYTE           bReserved;       // Reserved (must be 0)
-    WORD           wPlanes;         // Color Planes
-    WORD           wBitCount;       // Bits per pixel
-    DWORD          dwBytesInRes;    // How many bytes in this resource?
-    DWORD          dwImageOffset;   // Where in the file is this image?
-} ICONDIRENTRY;
-
-typedef struct {
-    BYTE   bWidth;
-    BYTE   bHeight;
-    BYTE   bColorCount;
-    BYTE   bReserved;
-    WORD   wPlanes;
-    WORD   wBitCount;
-    DWORD  dwBytesInRes;
-    WORD   nID;
-} GRPICONDIRENTRY;
-
-typedef struct {
-    WORD            idReserved;
-    WORD            idType;
-    WORD            idCount;
-    GRPICONDIRENTRY idEntries[1];
-} GRPICONDIR;
-#pragma pack(pop)
-
-static BOOL inject_icon(const WCHAR* exe_path, const WCHAR* icon_path) {
-    if (!icon_path || wcslen(icon_path) == 0) return TRUE;
-
-    size_t icon_file_size = 0;
-    unsigned char* icon_data = read_file_binary(icon_path, &icon_file_size);
-    if (!icon_data) return FALSE;
-
-    if (icon_file_size < sizeof(ICONDIR)) {
-        free(icon_data);
-        return FALSE;
-    }
-
-    ICONDIR* pDir = (ICONDIR*)icon_data;
-    if (pDir->idType != 1) { // 1 = Icon
-        free(icon_data);
-        return FALSE;
-    }
-
-    HANDLE hUpdate = BeginUpdateResourceW(exe_path, FALSE);
-    if (!hUpdate) {
-        free(icon_data);
-        return FALSE;
-    }
-
-    // Prepare RT_GROUP_ICON
-    size_t grp_size = sizeof(ICONDIR) + (pDir->idCount * sizeof(GRPICONDIRENTRY));
-    GRPICONDIR* pGrp = (GRPICONDIR*)malloc(grp_size);
-    pGrp->idReserved = pDir->idReserved;
-    pGrp->idType = pDir->idType;
-    pGrp->idCount = pDir->idCount;
-
-    ICONDIRENTRY* pEntries = (ICONDIRENTRY*)(icon_data + sizeof(ICONDIR));
-    
-    for (int i = 0; i < pDir->idCount; i++) {
-        // 1. RT_ICON resource
-        // Each entry's data is at dwImageOffset
-        UpdateResourceW(hUpdate, RT_ICON, MAKEINTRESOURCEW(i + 1), 
-                        MAKELANGID(LANG_NEUTRAL, SUBLANG_NEUTRAL), 
-                        icon_data + pEntries[i].dwImageOffset, 
-                        pEntries[i].dwBytesInRes);
-
-        // 2. Prepare entry for RT_GROUP_ICON
-        pGrp->idEntries[i].bWidth = pEntries[i].bWidth;
-        pGrp->idEntries[i].bHeight = pEntries[i].bHeight;
-        pGrp->idEntries[i].bColorCount = pEntries[i].bColorCount;
-        pGrp->idEntries[i].bReserved = pEntries[i].bReserved;
-        pGrp->idEntries[i].wPlanes = pEntries[i].wPlanes;
-        pGrp->idEntries[i].wBitCount = pEntries[i].wBitCount;
-        pGrp->idEntries[i].dwBytesInRes = pEntries[i].dwBytesInRes;
-        pGrp->idEntries[i].nID = (WORD)(i + 1);
-    }
-
-    // 3. RT_GROUP_ICON resource (usually ID 1)
-    UpdateResourceW(hUpdate, RT_GROUP_ICON, L"MAINICON", 
-                    MAKELANGID(LANG_NEUTRAL, SUBLANG_NEUTRAL), 
-                    pGrp, (DWORD)grp_size);
-
-    BOOL ok = EndUpdateResourceW(hUpdate, FALSE);
-    
-    free(pGrp);
-    free(icon_data);
-    return ok;
-}
-
 /* ========== Build Logic ========== */
 
 static BOOL build_protected_exe(const WCHAR* dwg_path, const WCHAR* suffix, int max_launches, uint32_t flags) {
@@ -366,22 +260,13 @@ static BOOL build_protected_exe(const WCHAR* dwg_path, const WCHAR* suffix, int 
     fclose(out);
     out = NULL;
     
-    // Inject custom icon if provided
-    if (g_szIconPath[0]) {
-        SetWindowTextW(g_hStatusLabel, L"正在注入自定義圖標...");
-        if (!inject_icon(output_path, g_szIconPath)) {
-            // Non-fatal, show warning but continue
-            MessageBoxW(g_hWnd, L"警告：無法注入自定義圖標。\n生成的檔案仍可使用，但圖標將維持預設值。", L"注意", MB_OK | MB_ICONWARNING);
-        }
-    }
-    
     // Success!
     swprintf(status_msg, 512, 
         L"✅ 建置成功！\n\n"
         L"輸出檔案：\n%ls\n\n"
         L"大小：%.1f KB",
         output_path, 
-        (stub_size + dwg_size + (double)FOOTER_SIZE) / 1024.0);
+        (stub_size + dwg_size + (double)sizeof(footer)) / 1024.0);
     
     MessageBoxW(g_hWnd, status_msg, L"CAD Locker", MB_OK | MB_ICONINFORMATION);
     
@@ -396,90 +281,7 @@ cleanup:
     return result;
 }
 
-/* ========== Settings Persistence ========== */
-
-static void load_settings(void) {
-    HKEY hKey;
-    if (RegOpenKeyExW(HKEY_CURRENT_USER, REG_BUILD_KEY_PATH, 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
-        WCHAR suffix[64];
-        WCHAR limit[16];
-        WCHAR icon[MAX_PATH];
-        DWORD flags = 0;
-        DWORD size;
-        
-        size = sizeof(suffix);
-        if (RegQueryValueExW(hKey, L"Suffix", NULL, NULL, (LPBYTE)suffix, &size) == ERROR_SUCCESS) {
-            SetWindowTextW(g_hSuffixEdit, suffix);
-        }
-        
-        size = sizeof(limit);
-        if (RegQueryValueExW(hKey, L"Limit", NULL, NULL, (LPBYTE)limit, &size) == ERROR_SUCCESS) {
-            SetWindowTextW(g_hLimitEdit, limit);
-        }
-        
-        size = sizeof(DWORD);
-        if (RegQueryValueExW(hKey, L"Flags", NULL, NULL, (LPBYTE)&flags, &size) == ERROR_SUCCESS) {
-            SendMessageW(g_hMeltdownCheck, BM_SETCHECK, (flags & FLAG_MELTDOWN) ? BST_CHECKED : BST_UNCHECKED, 0);
-            SendMessageW(g_hShowPopupCheck, BM_SETCHECK, (flags & FLAG_SHOW_COUNTDOWN) ? BST_CHECKED : BST_UNCHECKED, 0);
-            SendMessageW(g_hSelfDestructCheck, BM_SETCHECK, (flags & FLAG_SELF_DESTRUCT) ? BST_CHECKED : BST_UNCHECKED, 0);
-        }
-        
-        size = sizeof(icon);
-        if (RegQueryValueExW(hKey, L"IconPath", NULL, NULL, (LPBYTE)icon, &size) == ERROR_SUCCESS) {
-            wcscpy(g_szIconPath, icon);
-            SetWindowTextW(g_hIconLabel, get_filename(g_szIconPath));
-        }
-        
-        RegCloseKey(hKey);
-    }
-}
-
-static void save_settings(void) {
-    if (SendMessageW(g_hSaveSettingsCheck, BM_GETCHECK, 0, 0) != BST_CHECKED) return;
-    
-    HKEY hKey;
-    if (RegCreateKeyExW(HKEY_CURRENT_USER, REG_BUILD_KEY_PATH, 0, NULL, REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &hKey, NULL) == ERROR_SUCCESS) {
-        WCHAR suffix[64];
-        WCHAR limit[16];
-        DWORD flags = 0;
-        
-        GetWindowTextW(g_hSuffixEdit, suffix, 64);
-        RegSetValueExW(hKey, L"Suffix", 0, REG_SZ, (LPBYTE)suffix, (DWORD)((wcslen(suffix) + 1) * sizeof(WCHAR)));
-        
-        GetWindowTextW(g_hLimitEdit, limit, 16);
-        RegSetValueExW(hKey, L"Limit", 0, REG_SZ, (LPBYTE)limit, (DWORD)((wcslen(limit) + 1) * sizeof(WCHAR)));
-        
-        if (SendMessageW(g_hMeltdownCheck, BM_GETCHECK, 0, 0) == BST_CHECKED) flags |= FLAG_MELTDOWN;
-        if (SendMessageW(g_hShowPopupCheck, BM_GETCHECK, 0, 0) == BST_CHECKED) flags |= FLAG_SHOW_COUNTDOWN;
-        if (SendMessageW(g_hSelfDestructCheck, BM_GETCHECK, 0, 0) == BST_CHECKED) flags |= FLAG_SELF_DESTRUCT;
-        RegSetValueExW(hKey, L"Flags", 0, REG_DWORD, (LPBYTE)&flags, sizeof(DWORD));
-        
-        RegSetValueExW(hKey, L"IconPath", 0, REG_SZ, (LPBYTE)g_szIconPath, (DWORD)((wcslen(g_szIconPath) + 1) * sizeof(WCHAR)));
-        
-        RegCloseKey(hKey);
-    }
-}
-
 /* ========== File Selection ========== */
-
-static void select_icon_from_dialog(void) {
-    OPENFILENAMEW ofn = {0};
-    WCHAR szFile[MAX_PATH] = {0};
-    
-    ofn.lStructSize = sizeof(ofn);
-    ofn.hwndOwner = g_hWnd;
-    ofn.lpstrFile = szFile;
-    ofn.nMaxFile = MAX_PATH;
-    ofn.lpstrFilter = L"圖標檔案 (*.ico)\0*.ico\0所有檔案 (*.*)\0*.*\0";
-    ofn.nFilterIndex = 1;
-    ofn.lpstrTitle = L"選擇自定義圖標";
-    ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
-    
-    if (GetOpenFileNameW(&ofn)) {
-        wcscpy(g_szIconPath, szFile);
-        SetWindowTextW(g_hIconLabel, get_filename(g_szIconPath));
-    }
-}
 
 static void select_file_from_dialog(void) {
     OPENFILENAMEW ofn = {0};
@@ -630,37 +432,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                 30, y, 400, 25,
                 hWnd, (HMENU)ID_SELF_DESTRUCT_CHECK, NULL, NULL);
             SendMessageW(g_hSelfDestructCheck, BM_SETCHECK, BST_CHECKED, 0); // Default Checked
-            y += 35;
-            
-            // Icon Selection
-            CreateWindowW(
-                L"STATIC", L"選擇自定義圖標 (.ico)：",
-                WS_CHILD | WS_VISIBLE,
-                30, y, 200, 20,
-                hWnd, NULL, NULL, NULL);
-            y += 25;
-            
-            g_hIconLabel = CreateWindowW(
-                L"STATIC", L"(使用預設圖標)",
-                WS_CHILD | WS_VISIBLE | SS_PATHELLIPSIS,
-                30, y, 320, 20,
-                hWnd, NULL, NULL, NULL);
-            
-            CreateWindowW(
-                L"BUTTON", L"選擇圖標...",
-                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                360, y - 5, 100, 30,
-                hWnd, (HMENU)ID_ICON_BROWSE_BTN, NULL, NULL);
             y += 40;
-            
-            // Save Settings
-            g_hSaveSettingsCheck = CreateWindowW(
-                L"BUTTON", L"💾 記住我的設定 (後綴、次數、安全選項、圖標)",
-                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                30, y, 400, 25,
-                hWnd, (HMENU)ID_SAVE_SETTINGS_CHECK, NULL, NULL);
-            SendMessageW(g_hSaveSettingsCheck, BM_SETCHECK, BST_CHECKED, 0);
-            y += 45;
             
             // Build button
             g_hBuildBtn = CreateWindowW(
@@ -690,10 +462,6 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                     select_file_from_dialog();
                     break;
                 
-                case ID_ICON_BROWSE_BTN:
-                    select_icon_from_dialog();
-                    break;
-                    
                 case ID_BUILD_BTN:
                     if (g_szFilePath[0]) {
                         WCHAR suffix[64];
@@ -721,9 +489,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                             flags |= FLAG_SELF_DESTRUCT;
                         }
                         
-                        if (build_protected_exe(g_szFilePath, suffix, limit, flags)) {
-                            save_settings();
-                        }
+                        build_protected_exe(g_szFilePath, suffix, limit, flags);
                     }
                     break;
             }
@@ -808,9 +574,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     
     // Set default font for all controls
     EnumChildWindows(g_hWnd, SetFontCallback, (LPARAM)g_hFont);
-    
-    // Load previous settings
-    load_settings();
     
     // Show window
     ShowWindow(g_hWnd, nCmdShow);
