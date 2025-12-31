@@ -42,6 +42,7 @@
 #define ID_SELF_DESTRUCT_CHECK 1007
 
 #define STUB_FILENAME L"stub.exe"
+#define TIMER_ANIMATION 2001
 
 /* ========== Global Variables ========== */
 
@@ -56,6 +57,7 @@ static HWND g_hSelfDestructCheck = NULL;
 static HWND g_hStatusLabel = NULL;
 static HWND g_hBuildBtn = NULL;
 static WCHAR g_szFilePath[MAX_PATH] = {0};
+static float g_togglePos[3] = {0.0f, 0.0f, 0.0f}; // visual position 0.0 to 1.0
 static HBRUSH g_hBgBrush = NULL;
 static HBRUSH g_hAccentBrush = NULL;
 static HBRUSH g_hBlackBrush = NULL;
@@ -198,6 +200,10 @@ static void load_settings() {
     SetWindowLongPtr(g_hMeltdownCheck, GWLP_USERDATA, (flags & FLAG_MELTDOWN) ? 1 : 0);
     SetWindowLongPtr(g_hShowPopupCheck, GWLP_USERDATA, (flags & FLAG_SHOW_COUNTDOWN) ? 1 : 0);
     SetWindowLongPtr(g_hSelfDestructCheck, GWLP_USERDATA, (flags & FLAG_SELF_DESTRUCT) ? 1 : 0);
+    
+    g_togglePos[0] = (flags & FLAG_MELTDOWN) ? 1.0f : 0.0f;
+    g_togglePos[1] = (flags & FLAG_SHOW_COUNTDOWN) ? 1.0f : 0.0f;
+    g_togglePos[2] = (flags & FLAG_SELF_DESTRUCT) ? 1.0f : 0.0f;
 }
 
 static void save_settings() {
@@ -455,12 +461,13 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             }
             
             // 2. Draw Sidebar Branding
-            RECT brandRect = {0, 0, 160, 60};
+            RECT brandRect = {0, 0, 180, 60}; // Slightly wider
             FillRect(hdc, &brandRect, g_hBlackBrush);
             SetTextColor(hdc, RGB(255, 255, 255));
             SetBkMode(hdc, TRANSPARENT);
             SelectObject(hdc, g_hBigFont);
-            TextOutW(hdc, 20, 15, L"CAD LOCKER", 10);
+            // Center text better
+            TextOutW(hdc, 15, 15, L"CAD LOCKER", 10);
             
             // 3. Draw Large Orange Card (Drop Zone)
             RECT orangeRect = {130, 80, client.right - 30, 250};
@@ -484,14 +491,18 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             LPDRAWITEMSTRUCT pdis = (LPDRAWITEMSTRUCT)lParam;
             if (pdis->CtlType == ODT_BUTTON) {
                 HDC hdc = pdis->hDC;
-                BOOL isChecked = (BOOL)GetWindowLongPtr(pdis->hwndItem, GWLP_USERDATA);
+                int idx = pdis->CtlID - 1005;
+                float pos = (idx >= 0 && idx < 3) ? g_togglePos[idx] : (float)GetWindowLongPtr(pdis->hwndItem, GWLP_USERDATA);
                 
                 // Track rect
                 RECT trackRc = {0, 2, 60, 28};
                 int radius = 13;
                 
-                // Colors
-                HBRUSH hTrackBrush = isChecked ? CreateSolidBrush(RGB(50, 200, 100)) : CreateSolidBrush(RGB(150, 150, 150));
+                // Colors (Interpolated)
+                int r = (int)(150 + (50 - 150) * pos);
+                int g = (int)(150 + (200 - 150) * pos);
+                int b = (int)(150 + (100 - 150) * pos);
+                HBRUSH hTrackBrush = CreateSolidBrush(RGB(r, g, b));
                 
                 SelectObject(hdc, GetStockObject(NULL_PEN));
                 SelectObject(hdc, hTrackBrush);
@@ -501,7 +512,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                 SetTextColor(hdc, RGB(255, 255, 255));
                 SetBkMode(hdc, TRANSPARENT);
                 SelectObject(hdc, g_hSmallFont);
-                if (isChecked) {
+                if (pos > 0.5f) {
                     TextOutW(hdc, 10, 7, L"ON", 2);
                 } else {
                     TextOutW(hdc, 32, 7, L"OFF", 3);
@@ -511,7 +522,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                 HBRUSH hThumbBrush = CreateSolidBrush(RGB(255, 255, 255));
                 SelectObject(hdc, hThumbBrush);
                 int thumbSize = 20;
-                int thumbX = isChecked ? 36 : 4;
+                int thumbX = 4 + (int)(32 * pos);
                 int thumbY = 5;
                 Ellipse(hdc, thumbX, thumbY, thumbX + thumbSize, thumbY + thumbSize);
                 
@@ -529,6 +540,30 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             break;
         }
 
+        case WM_TIMER: {
+            if (wParam == TIMER_ANIMATION) {
+                BOOL needsMore = FALSE;
+                for (int i = 0; i < 3; i++) {
+                    HWND hCtrl = (i == 0) ? g_hMeltdownCheck : (i == 1) ? g_hShowPopupCheck : g_hSelfDestructCheck;
+                    float target = (float)GetWindowLongPtr(hCtrl, GWLP_USERDATA);
+                    if (g_togglePos[i] != target) {
+                        float step = 0.15f;
+                        if (g_togglePos[i] < target) {
+                            g_togglePos[i] += step;
+                            if (g_togglePos[i] > target) g_togglePos[i] = target;
+                        } else {
+                            g_togglePos[i] -= step;
+                            if (g_togglePos[i] < target) g_togglePos[i] = target;
+                        }
+                        InvalidateRect(hCtrl, NULL, TRUE);
+                        needsMore = TRUE;
+                    }
+                }
+                if (!needsMore) KillTimer(hWnd, TIMER_ANIMATION);
+            }
+            return 0;
+        }
+
         case WM_DROPFILES:
             handle_dropped_file((HDROP)wParam);
             return 0;
@@ -539,7 +574,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                 if (hCtrl == g_hMeltdownCheck || hCtrl == g_hShowPopupCheck || hCtrl == g_hSelfDestructCheck) {
                     LONG_PTR state = GetWindowLongPtr(hCtrl, GWLP_USERDATA);
                     SetWindowLongPtr(hCtrl, GWLP_USERDATA, !state);
-                    InvalidateRect(hCtrl, NULL, TRUE);
+                    SetTimer(hWnd, TIMER_ANIMATION, 16, NULL); // ~60fps
                     return 0;
                 }
             }
@@ -622,19 +657,19 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     
     g_hFont = CreateFontW(14, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
                           DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                          CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+                          CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Microsoft JhengHei");
     
-    g_hBigFont = CreateFontW(32, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+    g_hBigFont = CreateFontW(30, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                             CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+                             CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Microsoft JhengHei");
                              
     g_hSmallFont = CreateFontW(12, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                                DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                               CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+                               CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Microsoft JhengHei");
                                
     g_hVerticalFont = CreateFontW(16, 0, 900, 900, FW_BOLD, FALSE, FALSE, FALSE,
                                  DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                 CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+                                 CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Microsoft JhengHei");
     
     // Register window class
     wc.cbSize = sizeof(WNDCLASSEXW);
