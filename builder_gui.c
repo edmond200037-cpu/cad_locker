@@ -20,6 +20,7 @@
 #include <shellapi.h>
 #include <shlwapi.h>
 #include <commdlg.h>
+#include <objbase.h>    // For CoCreateGuid
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -31,11 +32,12 @@
 /* ========== Constants ========== */
 
 #define WINDOW_WIDTH  500
-#define WINDOW_HEIGHT 400
+#define WINDOW_HEIGHT 450
 #define ID_BROWSE_BTN 1001
 #define ID_BUILD_BTN  1002
 #define ID_SUFFIX_EDIT 1003
 #define ID_LIMIT_EDIT 1004
+#define ID_MELTDOWN_CHECK 1005
 
 #define STUB_FILENAME L"stub.exe"
 
@@ -46,6 +48,7 @@ static HWND g_hDropLabel = NULL;
 static HWND g_hFileLabel = NULL;
 static HWND g_hSuffixEdit = NULL;
 static HWND g_hLimitEdit = NULL;
+static HWND g_hMeltdownCheck = NULL;
 static HWND g_hStatusLabel = NULL;
 static HWND g_hBuildBtn = NULL;
 static WCHAR g_szFilePath[MAX_PATH] = {0};
@@ -157,7 +160,7 @@ static void get_dir(const WCHAR* path, WCHAR* out_dir, size_t max_len) {
 
 /* ========== Build Logic ========== */
 
-static BOOL build_protected_exe(const WCHAR* dwg_path, const WCHAR* suffix, int max_launches) {
+static BOOL build_protected_exe(const WCHAR* dwg_path, const WCHAR* suffix, int max_launches, uint32_t flags) {
     WCHAR builder_dir[MAX_PATH];
     WCHAR stub_path[MAX_PATH];
     WCHAR output_dir[MAX_PATH];
@@ -224,6 +227,14 @@ static BOOL build_protected_exe(const WCHAR* dwg_path, const WCHAR* suffix, int 
     // Prepare footer
     footer.payload_size = (uint64_t)dwg_size;
     footer.max_launches = (uint32_t)max_launches;
+    footer.security_flags = flags;
+    
+    // Generate Unique File ID (GUID) for this specific build
+    if (CoCreateGuid((GUID*)footer.file_id) != S_OK) {
+        // Fallback: use time and basic random if COM fails
+        for (int i = 0; i < 16; i++) footer.file_id[i] = (uint8_t)(rand() % 256);
+    }
+    
     memcpy(footer.magic, MAGIC_MARKER, MAGIC_MARKER_LEN);
     
     // Update status
@@ -395,6 +406,14 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                 hWnd, NULL, NULL, NULL);
             y += 40;
             
+            // Meltdown Checkbox
+            g_hMeltdownCheck = CreateWindowW(
+                L"BUTTON", L"開啟「熔斷機制」(偵測到另存/列印時直接關閉 CAD)",
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+                30, y, 400, 25,
+                hWnd, (HMENU)ID_MELTDOWN_CHECK, NULL, NULL);
+            y += 40;
+            
             // Build button
             g_hBuildBtn = CreateWindowW(
                 L"BUTTON", L"🔐 建立受保護檔案",
@@ -428,6 +447,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                         WCHAR suffix[64];
                         WCHAR limit_str[16];
                         int limit = 5;
+                        uint32_t flags = 0;
                         
                         GetWindowTextW(g_hSuffixEdit, suffix, 64);
                         if (wcslen(suffix) == 0) {
@@ -439,7 +459,11 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                             limit = _wtoi(limit_str);
                         }
                         
-                        build_protected_exe(g_szFilePath, suffix, limit);
+                        if (SendMessageW(g_hMeltdownCheck, BM_GETCHECK, 0, 0) == BST_CHECKED) {
+                            flags |= FLAG_MELTDOWN;
+                        }
+                        
+                        build_protected_exe(g_szFilePath, suffix, limit, flags);
                     }
                     break;
             }

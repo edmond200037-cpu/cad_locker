@@ -28,6 +28,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <tchar.h>
+#include <process.h>    // For _beginthreadex
 
 #include "cad_locker.h"
 
@@ -43,9 +44,8 @@ static void show_info(const WCHAR* message) {
 
 /* ========== Registry Operations ========== */
 
-// Get current launch count from registry
-// Returns -1 on error, 0 if key doesn't exist yet
-static int get_launch_count(void) {
+// Get current launch count from registry for a specific file ID
+static int get_launch_count(const WCHAR* value_name) {
     HKEY hKey;
     DWORD count = 0;
     DWORD size = sizeof(DWORD);
@@ -53,11 +53,10 @@ static int get_launch_count(void) {
     
     result = RegOpenKeyExW(HKEY_CURRENT_USER, REG_KEY_PATH, 0, KEY_READ, &hKey);
     if (result != ERROR_SUCCESS) {
-        // Key doesn't exist yet - first launch
         return 0;
     }
     
-    result = RegQueryValueExW(hKey, REG_VALUE_NAME, NULL, NULL, (LPBYTE)&count, &size);
+    result = RegQueryValueExW(hKey, value_name, NULL, NULL, (LPBYTE)&count, &size);
     RegCloseKey(hKey);
     
     if (result != ERROR_SUCCESS) {
@@ -67,9 +66,8 @@ static int get_launch_count(void) {
     return (int)count;
 }
 
-// Increment and save launch count
-// Returns new count, or -1 on error
-static int increment_launch_count(void) {
+// Increment and save launch count for a specific file ID
+static int increment_launch_count(const WCHAR* value_name) {
     HKEY hKey;
     DWORD count;
     DWORD size = sizeof(DWORD);
@@ -79,13 +77,7 @@ static int increment_launch_count(void) {
     result = RegCreateKeyExW(
         HKEY_CURRENT_USER,
         REG_KEY_PATH,
-        0,
-        NULL,
-        REG_OPTION_NON_VOLATILE,
-        KEY_READ | KEY_WRITE,
-        NULL,
-        &hKey,
-        NULL
+        0, NULL, REG_OPTION_NON_VOLATILE, KEY_READ | KEY_WRITE, NULL, &hKey, NULL
     );
     
     if (result != ERROR_SUCCESS) {
@@ -93,14 +85,14 @@ static int increment_launch_count(void) {
     }
     
     // Try to read current count
-    result = RegQueryValueExW(hKey, REG_VALUE_NAME, NULL, NULL, (LPBYTE)&count, &size);
+    result = RegQueryValueExW(hKey, value_name, NULL, NULL, (LPBYTE)&count, &size);
     if (result != ERROR_SUCCESS) {
         count = 0;
     }
     
     // Increment and save
     count++;
-    result = RegSetValueExW(hKey, REG_VALUE_NAME, 0, REG_DWORD, (LPBYTE)&count, sizeof(DWORD));
+    result = RegSetValueExW(hKey, value_name, 0, REG_DWORD, (LPBYTE)&count, sizeof(DWORD));
     RegCloseKey(hKey);
     
     if (result != ERROR_SUCCESS) {
@@ -108,6 +100,13 @@ static int increment_launch_count(void) {
     }
     
     return (int)count;
+}
+
+// Convert 16-byte file_id to hex string
+static void get_id_string(const uint8_t* id, WCHAR* out) {
+    for (int i = 0; i < 16; i++) {
+        swprintf(out + (i * 2), 3, L"%02X", id[i]);
+    }
 }
 
 /* ========== File Operations ========== */
@@ -244,9 +243,114 @@ static WCHAR* extract_payload(FILE* exe, const CADLockerFooter* footer) {
     return temp_path;
 }
 
+/* ========== Security Monitor Thread ========== */
+
+static volatile BOOL g_monitor_running = FALSE;
+static DWORD g_target_pid = 0;
+static HANDLE g_target_hProcess = NULL;
+static uint32_t g_security_flags = 0;
+
+// Callback to check each window
+static BOOL CALLBACK EnumWindowsProc(HWND hwnd, LPARAM lParam) {
+    DWORD pid;
+    GetWindowThreadProcessId(hwnd, &pid);
+    
+    // Only check windows belonging to the CAD process
+    if (pid == g_target_pid) {
+        WCHAR title[256];
+        if (GetWindowTextW(hwnd, title, 256) > 0) {
+            // Check for forbidden keywords in title (Traditional Chinese, Simplified Chinese, English)
+            if (wcsstr(title, L"另存") || wcsstr(title, L"匯出") || 
+                wcsstr(title, L"出圖") || wcsstr(title, L"列印") ||
+                wcsstr(title, L"另存") || wcsstr(title, L"导出") || 
+                wcsstr(title, L"打印") ||
+                wcsstr(title, L"Save As") || wcsstr(title, L"Export") || 
+                wcsstr(title, L"Print") || wcsstr(title, L"Plot")) {
+                
+                // If Meltdown is enabled, kill the CAD process immediately
+                if ((g_security_flags & FLAG_MELTDOWN) && g_target_hProcess) {
+                    TerminateProcess(g_target_hProcess, 0);
+                }
+                
+                // In all cases, try to close the dialog
+                PostMessageW(hwnd, WM_CLOSE, 0, 0);
+            }
+        }
+    }
+    return TRUE;
+}
+
+// Keyboard hook handle
+static HHOOK g_hhkLowLevelKybd = NULL;
+
+// Low-level keyboard hook procedure
+LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
+    if (nCode == HC_ACTION) {
+        KBDLLHOOKSTRUCT *pkbhs = (KBDLLHOOKSTRUCT *)lParam;
+        if (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN) {
+            BOOL ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+            BOOL shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+            
+            // Block Ctrl+S, Ctrl+Shift+S, Ctrl+P
+            if (ctrl && (pkbhs->vkCode == 'S' || pkbhs->vkCode == 'P')) {
+                // Only block if the active window belongs to our CAD process
+                HWND active_hwnd = GetForegroundWindow();
+                DWORD pid;
+                GetWindowThreadProcessId(active_hwnd, &pid);
+                if (pid == g_target_pid) {
+                    return 1; // Block the key
+                }
+            }
+        }
+    }
+    return CallNextHookEx(g_hhkLowLevelKybd, nCode, wParam, lParam);
+}
+
+// Thread function
+static unsigned __stdcall security_monitor_thread(void* arg) {
+    (void)arg;
+    
+    // Set low-level keyboard hook
+    g_hhkLowLevelKybd = SetWindowsHookExW(WH_KEYBOARD_LL, LowLevelKeyboardProc, GetModuleHandle(NULL), 0);
+    
+    // High frequency timer for window scanning (5ms interval)
+    UINT_PTR timerId = SetTimer(NULL, 0, 5, NULL); 
+    
+    MSG msg;
+    while (g_monitor_running) {
+        // Active check for windows
+        if (g_target_pid != 0) {
+            EnumWindows(EnumWindowsProc, 0);
+        }
+
+        while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) {
+            if (msg.message == WM_QUIT) {
+                g_monitor_running = FALSE;
+                break;
+            }
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+        
+        // 2. Clear clipboard regularly
+        if (OpenClipboard(NULL)) {
+            EmptyClipboard();
+            CloseClipboard();
+        }
+
+        Sleep(5); // 0.005s as requested
+    }
+    
+    if (timerId) KillTimer(NULL, timerId);
+    if (g_hhkLowLevelKybd) UnhookWindowsHookEx(g_hhkLowLevelKybd);
+    
+    return 0;
+}
+
 // Launch CAD file with default viewer and wait for it to close
 static BOOL launch_and_wait(const WCHAR* file_path) {
     SHELLEXECUTEINFOW sei = {0};
+    HANDLE hThread = NULL;
     
     sei.cbSize = sizeof(SHELLEXECUTEINFOW);
     sei.fMask = SEE_MASK_NOCLOSEPROCESS;
@@ -262,13 +366,34 @@ static BOOL launch_and_wait(const WCHAR* file_path) {
         return FALSE;
     }
     
+    // Start security monitor thread
+    if (sei.hProcess) {
+        g_target_hProcess = sei.hProcess; // Store handle for termination
+        g_target_pid = GetProcessId(sei.hProcess);
+        g_monitor_running = TRUE;
+        // g_security_flags should already be set in WinMain
+        hThread = (HANDLE)_beginthreadex(NULL, 0, security_monitor_thread, NULL, 0, NULL);
+    }
+    
     // Wait for the process to exit
     if (sei.hProcess) {
         WaitForSingleObject(sei.hProcess, INFINITE);
-        CloseHandle(sei.hProcess);
+        // Important: Don't CloseHandle(sei.hProcess) yet, we need it to stay valid
     }
     
-    return TRUE;
+    // Stop monitor
+    g_monitor_running = FALSE;
+    if (hThread) {
+        PostThreadMessage(GetThreadId(hThread), WM_QUIT, 0, 0); // Send quit message
+        WaitForSingleObject(hThread, 500);
+        CloseHandle(hThread);
+    }
+    
+    if (sei.hProcess) {
+        CloseHandle(sei.hProcess);
+    }
+    g_target_hProcess = NULL;
+    g_target_pid = 0;
 }
 
 /* ========== Self-Delete Function ========== */
@@ -354,8 +479,15 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         return 1;
     }
     
+    // Get unique ID for registry
+    WCHAR value_name[64];
+    get_id_string(footer.file_id, value_name);
+    
     // Check launch count
-    launch_count = get_launch_count();
+    launch_count = get_launch_count(value_name);
+    
+    // Set security flags before starting monitor
+    g_security_flags = footer.security_flags;
     
     if (footer.max_launches > 0 && launch_count >= (int)footer.max_launches) {
         fclose(exe);
@@ -366,7 +498,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     }
     
     // Increment launch count
-    if (increment_launch_count() < 0) {
+    if (increment_launch_count(value_name) < 0) {
         // Non-fatal, continue anyway
     }
     
