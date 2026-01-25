@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CAD Locker Pro - 修改器</title>
+    <link rel="stylesheet" href="index.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=Outfit:wght@400;700&display=swap"
+        rel="stylesheet">
+</head>
+
+<body>
+    <div class="glass-glow"></div>
+    <div class="container">
+        <h1>CAD Locker 授權修改器</h1>
+
+        <div id="dropZone" class="drop-zone">
+            <div class="icon">📁</div>
+            <p>將受保護的 EXE 拖放到此處 或 點擊上傳</p>
+            <input type="file" id="fileInput" style="display: none" accept=".exe">
+        </div>
+
+        <div id="controls" class="controls">
+            <div class="file-info" id="fileInfo"></div>
+
+            <div class="input-group">
+                <label for="newLimit">新的開啟次數限制 (建議 1-99999)</label>
+                <input type="number" id="newLimit" value="9999" min="1" max="999999">
+            </div>
+
+            <button id="patchBtn">套用修改並下載</button>
+            <div id="status" class="status"></div>
+        </div>
+    </div>
+
+    <script>
+        const dropZone = document.getElementById('dropZone');
+        const fileInput = document.getElementById('fileInput');
+        const controls = document.getElementById('controls');
+        const fileInfo = document.getElementById('fileInfo');
+        const patchBtn = document.getElementById('patchBtn');
+        const status = document.getElementById('status');
+        const newLimitInput = document.getElementById('newLimit');
+
+        let currentArrayBuffer = null;
+        let fileName = '';
+
+        dropZone.onclick = () => fileInput.click();
+
+        fileInput.onchange = (e) => handleFile(e.target.files[0]);
+
+        dropZone.ondragover = (e) => {
+            e.preventDefault();
+            dropZone.classList.add('drag-over');
+        };
+
+        dropZone.ondragleave = () => dropZone.classList.remove('drag-over');
+
+        dropZone.ondrop = (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('drag-over');
+            handleFile(e.dataTransfer.files[0]);
+        };
+
+        function handleFile(file) {
+            if (!file) return;
+            if (!file.name.toLowerCase().endsWith('.exe')) {
+                showStatus('請上傳 EXE 檔案', 'error');
+                return;
+            }
+
+            fileName = file.name;
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                currentArrayBuffer = e.target.result;
+                fileInfo.textContent = `檔案: ${fileName} (${(file.size / 1024).toFixed(1)} KB)`;
+                controls.classList.add('visible');
+                showStatus('檔案已載入，準備修改...', 'info');
+
+                // 嘗試偵測當前限制
+                detectCurrentLimit(currentArrayBuffer);
+            };
+            reader.readAsArrayBuffer(file);
+        }
+
+        function showStatus(msg, type) {
+            status.textContent = msg;
+            status.className = 'status ' + type;
+        }
+
+        function detectCurrentLimit(buffer) {
+            const bytes = new Uint8Array(buffer);
+            // 搜尋結尾附近的 CADLOCK 標記 (43 41 44 4c 4f 43 4b 00)
+            const sig = [0x43, 0x41, 0x44, 0x4c, 0x4f, 0x43, 0x4b, 0x00];
+            let sigPos = -1;
+
+            for (let i = bytes.length - sig.length; i >= bytes.length - 100; i--) {
+                let match = true;
+                for (let j = 0; j < sig.length; j++) {
+                    if (bytes[i + j] !== sig[j]) { match = false; break; }
+                }
+                if (match) { sigPos = i; break; }
+            }
+
+            if (sigPos !== -1) {
+                // 根據最新分析：限制位置是在 sigPos - 24
+                // 結構: [Limit(4)] [OtherData(20)] [CADLOCK(8)]
+                const limitPos = sigPos - 24;
+                const currentLimit = bytes[limitPos] | (bytes[limitPos + 1] << 8) | (bytes[limitPos + 2] << 16) | (bytes[limitPos + 3] << 24);
+                showStatus(`偵測到 CADLOCK 結構！目前限制次數：${currentLimit} 次。`, 'info');
+                return limitPos;
+            } else {
+                showStatus('注意：找不到標準的 CADLOCK 尾部標記，此檔案可能已損壞或格式不符。', 'error');
+                return -1;
+            }
+        }
+
+        patchBtn.onclick = () => {
+            if (!currentArrayBuffer) return;
+
+            try {
+                const bytes = new Uint8Array(currentArrayBuffer.slice(0));
+                const limitPos = detectCurrentLimit(bytes);
+                const newLimit = parseInt(newLimitInput.value);
+
+                if (limitPos !== -1) {
+                    // 修改 4 位元組限制值
+                    bytes[limitPos] = newLimit & 0xFF;
+                    bytes[limitPos + 1] = (newLimit >> 8) & 0xFF;
+                    bytes[limitPos + 2] = (newLimit >> 16) & 0xFF;
+                    bytes[limitPos + 3] = (newLimit >> 24) & 0xFF;
+
+                    downloadPatchedFile(bytes);
+                    showStatus(`修改成功！已將限制設為 ${newLimit} 次。`, 'success');
+                    alert("【修改成功】\n請記得對下載的檔案按右鍵 -> 『內容』 -> 勾選『解除鎖定』，否則 Windows 會阻止執行。");
+                } else {
+                    showStatus('修改失敗：找不到目標結構位置。', 'error');
+                }
+
+            } catch (err) {
+                showStatus('執行失敗: ' + err.message, 'error');
+            }
+        };
+
+        function downloadPatchedFile(bytes) {
+            const blob = new Blob([bytes], { type: 'application/octet-stream' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = fileName.replace('.exe', '_patched.exe');
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+    </script>
+</body>
+
+</html>

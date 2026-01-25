@@ -1,0 +1,145 @@
+
+:root {
+    --primary: #00f2ff;
+    --secondary: #7000ff;
+    --bg: #0a0a0f;
+    --card-bg: #151520;
+    --text: #e0e0e0;
+    --success: #00ff88;
+}
+
+body {
+    background-color: var(--bg);
+    color: var(--text);
+    font-family: 'Outfit', 'Inter', system-ui, -apple-system, sans-serif;
+    margin: 0;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+    overflow: hidden;
+}
+
+.container {
+    width: 100%;
+    max-width: 600px;
+    padding: 40px;
+    background: var(--card-bg);
+    border-radius: 20px;
+    box-shadow: 0 0 40px rgba(0, 0, 0, 0.5), 0 0 2px var(--primary);
+    position: relative;
+    z-index: 1;
+}
+
+.glass-glow {
+    position: absolute;
+    top: -10%;
+    left: -10%;
+    width: 120%;
+    height: 120%;
+    background: radial-gradient(circle at center, rgba(0, 242, 255, 0.05) 0%, transparent 70%);
+    pointer-events: none;
+    z-index: -1;
+}
+
+h1 {
+    font-weight: 700;
+    letter-spacing: -1px;
+    margin-bottom: 30px;
+    text-align: center;
+    background: linear-gradient(90deg, var(--primary), var(--secondary));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+}
+
+.drop-zone {
+    border: 2px dashed rgba(255, 255, 255, 0.1);
+    border-radius: 12px;
+    padding: 60px 20px;
+    text-align: center;
+    transition: all 0.3s ease;
+    cursor: pointer;
+    background: rgba(255, 255, 255, 0.02);
+}
+
+.drop-zone:hover, .drop-zone.drag-over {
+    border-color: var(--primary);
+    background: rgba(0, 242, 255, 0.05);
+}
+
+.controls {
+    margin-top: 30px;
+    display: none;
+    opacity: 0;
+    transform: translateY(20px);
+    transition: all 0.5s ease;
+}
+
+.controls.visible {
+    display: block;
+    opacity: 1;
+    transform: translateY(0);
+}
+
+.input-group {
+    margin-bottom: 20px;
+}
+
+label {
+    display: block;
+    margin-bottom: 10px;
+    font-size: 0.9rem;
+    color: #888;
+}
+
+input[type="number"] {
+    width: 100%;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 8px;
+    padding: 12px;
+    color: white;
+    font-size: 1.1rem;
+    outline: none;
+    box-sizing: border-box;
+}
+
+button {
+    width: 100%;
+    padding: 15px;
+    border-radius: 8px;
+    border: none;
+    background: linear-gradient(90deg, var(--primary), var(--secondary));
+    color: white;
+    font-weight: 600;
+    font-size: 1rem;
+    cursor: pointer;
+    transition: transform 0.2s;
+    box-shadow: 0 4px 15px rgba(0, 242, 255, 0.3);
+}
+
+button:hover {
+    transform: scale(1.02);
+}
+
+button:active {
+    transform: scale(0.98);
+}
+
+.status {
+    margin-top: 20px;
+    padding: 15px;
+    border-radius: 8px;
+    font-size: 0.9rem;
+    display: none;
+}
+
+.status.info { display: block; background: rgba(0, 242, 255, 0.1); color: var(--primary); }
+.status.success { display: block; background: rgba(0, 255, 136, 0.1); color: var(--success); }
+.status.error { display: block; background: rgba(255, 0, 88, 0.1); color: #ff0058; }
+
+.file-info {
+    margin-bottom: 20px;
+    font-size: 0.85rem;
+    color: #666;
+}
